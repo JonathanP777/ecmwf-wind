@@ -67,6 +67,34 @@
   <canvas id="barbKey" width="260" height="46"></canvas>
 </div>
 
+<div id="ams">
+  <div id="amsBody" hidden>
+    <div class="amsHead">Pinpoint readout</div>
+    <label class="amsMaster"><input type="checkbox" id="hOn"> Show readout under the cursor</label>
+    <div id="amsVars">
+      <label class="amsAutoRow"><input type="checkbox" id="hAuto"> Match current layer <span class="lnote">(auto)</span></label>
+      <div class="amsSub" id="amsSubVars">Show these values</div>
+      <div class="amsGrid">
+        <label><input type="checkbox" id="hSpeed"> Wind speed</label>
+        <label><input type="checkbox" id="hDir"> Wind direction</label>
+        <label><input type="checkbox" id="hGust"> Gust</label>
+        <label><input type="checkbox" id="hTemp"> Temperature</label>
+        <label><input type="checkbox" id="hPres"> Pressure</label>
+        <label><input type="checkbox" id="hPcp"> Precipitation (selected period)</label>
+        <label><input type="checkbox" id="hPcpTot"> Precip total since run start</label>
+        <label><input type="checkbox" id="hCoord"> Coordinates</label>
+      </div>
+      <div class="amsSub">Style</div>
+      <div class="amsStyle">
+        <label><input type="radio" name="hStyle" id="hCompact" value="compact"> Compact</label>
+        <label><input type="radio" name="hStyle" id="hDetailed" value="detailed"> Detailed <span class="lnote">(extra units, gust/precip period)</span></label>
+      </div>
+    </div>
+    <div class="amsFoot"><button id="hReset">Reset these</button><span class="lnote">Saved on this device</span></div>
+  </div>
+  <button id="amsBtn" aria-expanded="false" aria-controls="amsBody">Additional Map Settings <span id="amsArrow">▴</span></button>
+</div>
+
 <div id="tooltip"></div>
 <div id="loading">Loading forecast…</div>
 

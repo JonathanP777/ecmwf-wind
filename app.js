@@ -9,7 +9,12 @@ const $ = id => document.getElementById(id);
 
 // ---------- user settings (saved in localStorage) ----------
 const DEFAULTS = { units: 'kt', tempUnit: 'F', precipUnit: 'in', shade: 'speed', precipPeriod: '3',
-  speed: 0.4, width: 1.0, trail: 6, density: 1.0, particles: true, barbs: true, isobars: false };
+  speed: 0.4, width: 1.0, trail: 6, density: 1.0, particles: true, barbs: true, isobars: false,
+  // pinpoint readout options ("Additional Map Settings" menu)
+  // hoverAuto: show the variable(s) matching the displayed layer; hv* = extra (or, with auto off, the full manual set)
+  hoverOn: true, hoverAuto: true, hoverStyle: 'compact', hvSpeed: false, hvDir: false, hvGust: false, hvTemp: false,
+  hvPres: false, hvPcp: false, hvPcpTot: false, hvCoord: false };
+const HOVER_KEYS = ['hoverOn', 'hoverAuto', 'hoverStyle', 'hvSpeed', 'hvDir', 'hvGust', 'hvTemp', 'hvPres', 'hvPcp', 'hvPcpTot', 'hvCoord'];
 const UNITS = {
   kt:  { f: 1.943844, label: 'kt',   name: 'knots', ticks: [0, 10, 20, 30, 40, 50, 60, 80, 100] },
   mph: { f: 2.236936, label: 'mph',  name: 'mph',   ticks: [0, 20, 40, 60, 80, 100] },
@@ -25,6 +30,7 @@ try {
   if (!['3', '6', '24', 'total'].includes(settings.precipPeriod)) settings.precipPeriod = DEFAULTS.precipPeriod;
   if (!['F', 'C'].includes(settings.tempUnit)) settings.tempUnit = 'F';
   if (!['in', 'mm'].includes(settings.precipUnit)) settings.precipUnit = 'in';
+  if (!['compact', 'detailed'].includes(settings.hoverStyle)) settings.hoverStyle = 'compact';
 } catch (e) {}
 function saveSettings() { try { localStorage.setItem('windSettings', JSON.stringify(settings)); } catch (e) {} }
 function fmtSpeed(ms) { const u = UNITS[settings.units]; const v = ms * u.f; return (settings.units === 'ms' ? v.toFixed(1) : v.toFixed(0)) + ' ' + u.label; }
@@ -456,33 +462,115 @@ map.on('movestart zoomstart', () => { moving = true; partCv.getContext('2d').cle
 map.on('moveend', () => { moving = false; resetParticles(); redrawStatic(); });
 map.on('resize', () => { resetParticles(); redrawStatic(); });
 
-// hover readout
+// hover readout (one variable per line; contents chosen in "Additional Map Settings")
 const tip = $('tooltip');
-map.on('mousemove', e => {
-  const la = e.latlng.lat, lo = e.latlng.lng, p = sample(la, lo);
-  if (!p) { tip.style.display = 'none'; return; }
-  const st = field.st;
+const COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+function fmtCoord(la, lo) {
+  return Math.abs(la).toFixed(2) + '°' + (la >= 0 ? 'N' : 'S') + ', ' + Math.abs(lo).toFixed(2) + '°' + (lo >= 0 ? 'E' : 'W');
+}
+// variables implied by what is on screen (used when "Match current layer" is on)
+function autoVars() {
+  const a = new Set();
+  if (!settings.hoverAuto) return a;
+  const sh = settings.shade;
+  if (sh === 'speed' || sh === 'off') { a.add('hvSpeed'); a.add('hvDir'); }
+  if (sh === 'gust') a.add('hvGust');
+  if (sh === 'temp') a.add('hvTemp');
+  if (sh === 'precip') a.add('hvPcp');
+  if (settings.isobars) a.add('hvPres');
+  return a;
+}
+function shown(k) { return settings[k] || autoVars().has(k); }
+function readoutRows(la, lo) {
+  const p = sample(la, lo);
+  if (!p) return null;
+  const st = field.st, det = settings.hoverStyle === 'detailed', rows = [];
+  const sub = t => det && t ? ` <span class="sub">${t}</span>` : '';
+  const na = '<span class="sub">n/a at +0h</span>';
   const ms = Math.hypot(p[0], p[1]), dir = (Math.atan2(-p[0], -p[1]) * 180 / Math.PI + 360) % 360;
-  const compass = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'][Math.round(dir / 22.5) % 16];
-  const lon = ((lo + 180) % 360 + 360) % 360 - 180;
-  const second = settings.units === 'ms' ? (ms * MS2KT).toFixed(0) + ' kt' : ms.toFixed(1) + ' m/s';
-  const gs = sampleGust(la, lo);
-  const grey = s => `<span style="color:#aaa">${s}</span>`;
-  let pc = 'Precip: ' + (st.hour === 0 ? 'n/a at +0h' : '');
-  if (st.hour > 0) {
-    const per = effPeriod();
-    if (per && per !== 'total' && field.pcp) pc += `<b>${fmtPrecip(samplePcp(la, lo, per))}</b> ${grey('(' + per + ' h)')} · `;
-    pc += `<b>${fmtPrecip(sampleAcc(la, lo))}</b> ${grey('since run start')}`;
+  const second = v => settings.units === 'ms' ? (v * MS2KT).toFixed(0) + ' kt' : v.toFixed(1) + ' m/s';
+  if (shown('hvSpeed')) rows.push(['Wind', fmtSpeed(ms) + sub(second(ms))]);
+  if (shown('hvDir')) rows.push(['Direction', 'from ' + COMPASS[Math.round(dir / 22.5) % 16] + sub(dir.toFixed(0) + '°')]);
+  if (shown('hvGust')) {
+    const gs = sampleGust(la, lo);
+    rows.push(['Gust', gs === null ? na : fmtSpeed(gs) + sub(second(gs) + ' · max, prev ' + st.gustPeriod + ' h')]);
   }
-  tip.innerHTML = `Wind <b>${fmtSpeed(ms)}</b> (${second}) from ${dir.toFixed(0)}° ${compass}<br>` +
-    (gs === null ? 'Gust: n/a at +0h' : `Gust: <b>${fmtSpeed(gs)}</b> ${grey('(max, previous ' + st.gustPeriod + ' h)')}`) + '<br>' +
-    `Temp: <b>${fmtTemp(sampleTemp(la, lo))}</b> · Pressure: <b>${samplePres(la, lo).toFixed(0)} hPa</b><br>${pc}<br>` +
-    grey(`${la.toFixed(2)}°, ${lon.toFixed(2)}°`);
-  tip.style.display = 'block';
+  if (shown('hvTemp')) {
+    const c = sampleTemp(la, lo);
+    rows.push(['Temp', fmtTemp(c) + sub(settings.tempUnit === 'F' ? c.toFixed(1) + '°C' : (c * 9 / 5 + 32).toFixed(0) + '°F')]);
+  }
+  if (shown('hvPres')) rows.push(['Pressure', samplePres(la, lo).toFixed(0) + ' hPa' + sub('sea level')]);
+  const other = mm => settings.precipUnit === 'in' ? mm.toFixed(1) + ' mm' : (mm / 25.4).toFixed(2) + ' in';
+  let totalShown = false;
+  if (shown('hvPcp')) {
+    const per = st.hour > 0 ? effPeriod() : null;
+    if (st.hour === 0) rows.push(['Precip', na]);
+    else if (per === 'total' || !per || !field.pcp) { const v = sampleAcc(la, lo); rows.push(['Precip total', fmtPrecip(v) + sub(other(v) + ' · since run start')]); totalShown = true; }
+    else { const v = samplePcp(la, lo, per); rows.push(['Precip ' + per + ' h', fmtPrecip(v) + sub(other(v) + ' · ending at valid time')]); }
+  }
+  if (shown('hvPcpTot') && !totalShown && !(shown('hvPcp') && st.hour === 0)) {
+    if (st.hour === 0) rows.push(['Precip total', na]);
+    else { const v = sampleAcc(la, lo); rows.push(['Precip total', fmtPrecip(v) + sub(other(v) + ' · since run start')]); }
+  }
+  if (shown('hvCoord')) {
+    const lon = ((lo + 180) % 360 + 360) % 360 - 180;
+    rows.push(['Location', '<span class="sub2">' + fmtCoord(la, lon) + '</span>']);
+  }
+  return rows;
+}
+function showTip(e) {
+  if (!settings.hoverOn || !field) { tip.style.display = 'none'; return; }
+  const rows = readoutRows(e.latlng.lat, e.latlng.lng);
+  if (!rows || !rows.length) { tip.style.display = 'none'; return; }
+  tip.innerHTML = rows.map(([k, v]) => `<span class="k">${k}</span><span class="v">${v}</span>`).join('');
+  tip.style.display = 'grid';
   const x = e.containerPoint.x + 14, y = e.containerPoint.y + 14, sz = map.getSize();
-  tip.style.left = Math.min(x, sz.x - tip.offsetWidth - 6) + 'px'; tip.style.top = Math.min(y, sz.y - tip.offsetHeight - 6) + 'px';
-});
+  tip.style.left = Math.max(4, Math.min(x, sz.x - tip.offsetWidth - 6)) + 'px';
+  tip.style.top = Math.max(4, Math.min(y, sz.y - tip.offsetHeight - 6)) + 'px';
+}
+map.on('mousemove', showTip);
+map.on('click', e => { if (L.Browser.touch) showTip(e); });   // tap-to-read on phones/tablets
 map.on('mouseout', () => tip.style.display = 'none');
+
+// ---------- "Additional Map Settings" menu (bottom-left) ----------
+const hoverUI = (function () {
+  const btn = $('amsBtn'), body = $('amsBody');
+  function setOpen(open) { body.hidden = !open; btn.setAttribute('aria-expanded', open); $('amsArrow').textContent = open ? '▾' : '▴'; }
+  btn.onclick = () => {
+    const open = body.hidden; setOpen(open);
+    if (open && !$('settings').hidden) $('settingsBtn').click();   // only one panel open at a time (they overlap on short screens)
+  };
+  $('settingsBtn').addEventListener('click', () => setTimeout(() => { if (!$('settings').hidden) setOpen(false); }, 0));
+  const boxes = { hoverOn: 'hOn', hvSpeed: 'hSpeed', hvDir: 'hDir', hvGust: 'hGust', hvTemp: 'hTemp', hvPres: 'hPres', hvPcp: 'hPcp', hvPcpTot: 'hPcpTot', hvCoord: 'hCoord' };
+  function sync() {
+    const auto = autoVars();
+    for (const k in boxes) $(boxes[k]).checked = settings[k];
+    $('hAuto').checked = settings.hoverAuto;
+    $('hCompact').checked = settings.hoverStyle === 'compact'; $('hDetailed').checked = settings.hoverStyle === 'detailed';
+    $('amsVars').classList.toggle('off', !settings.hoverOn);
+    $('amsVars').querySelectorAll('input').forEach(i => i.disabled = !settings.hoverOn);
+    // variables implied by the current layer: shown ticked + locked, tagged "auto"
+    for (const k in boxes) {
+      if (k === 'hoverOn') continue;
+      const el = $(boxes[k]), lab = el.parentElement, on = auto.has(k);
+      lab.classList.toggle('auto', on);
+      if (on) { el.checked = true; el.disabled = true; }
+    }
+    $('amsSubVars').textContent = settings.hoverAuto ? 'Also show these (items tagged auto are shown automatically for current layer)' : 'Show these values';
+  }
+  for (const k in boxes) $(boxes[k]).addEventListener('change', () => { settings[k] = $(boxes[k]).checked; saveSettings(); sync(); tip.style.display = 'none'; });
+  $('hAuto').addEventListener('change', () => {
+    const before = autoVars();                       // turning auto off: keep what was showing as the manual set
+    settings.hoverAuto = $('hAuto').checked;
+    if (!settings.hoverAuto) before.forEach(k => settings[k] = true);
+    saveSettings(); sync(); tip.style.display = 'none';
+  });
+  ['shadeSel', 'tIsobars'].forEach(id => $(id).addEventListener('change', () => setTimeout(sync, 0)));
+  ['hCompact', 'hDetailed'].forEach(id => $(id).addEventListener('change', () => { settings.hoverStyle = $(id).value; saveSettings(); sync(); }));
+  $('hReset').onclick = () => { HOVER_KEYS.forEach(k => settings[k] = DEFAULTS[k]); saveSettings(); sync(); tip.style.display = 'none'; };
+  sync();
+  return { sync };
+})();
 
 // ---------- legend ----------
 function drawLegend() {
@@ -540,7 +628,7 @@ function drawLegend() {
     });
   }
   $('sReset').onclick = () => {
-    Object.assign(settings, DEFAULTS); sync(); saveSettings();
+    Object.assign(settings, DEFAULTS); sync(); saveSettings(); hoverUI.sync();
     $('shadeSel').value = settings.shade; $('pcpSel').value = settings.precipPeriod;
     $('tParticles').checked = settings.particles; $('tBarbs').checked = settings.barbs; $('tIsobars').checked = settings.isobars;
     if (meta) { resetParticles(); redrawStatic(); updateNotes(); } else drawLegend();

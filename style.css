@@ -21,7 +21,29 @@ html,body{margin:0;height:100%;background:#111;font-family:system-ui,-apple-syst
 #legend .ltitle{font-weight:600;margin-bottom:4px}
 #legendTicks{position:relative;height:14px;width:260px}
 #legendTicks span{position:absolute;transform:translateX(-50%);color:#ccc}
-#tooltip{position:absolute;z-index:1001;pointer-events:none;background:rgba(0,0,0,.8);padding:4px 7px;border-radius:4px;font-size:12px;display:none;white-space:nowrap}
+#tooltip{position:absolute;z-index:1001;pointer-events:none;background:rgba(12,14,18,.9);padding:5px 9px;border-radius:5px;font-size:12px;display:none;white-space:nowrap;
+  grid-template-columns:auto auto;column-gap:10px;row-gap:1px;line-height:1.35;box-shadow:0 1px 6px rgba(0,0,0,.5)}
+#tooltip .k{color:#9aa4b2}
+#tooltip .v{font-weight:600;font-variant-numeric:tabular-nums}
+#tooltip .sub{font-weight:400;color:#9aa4b2;margin-left:3px}
+#tooltip .sub2{font-weight:400;color:#cfd6df}
+#ams{position:absolute;left:10px;bottom:24px;z-index:1000;display:flex;flex-direction:column;align-items:flex-start;gap:6px;max-width:calc(100vw - 20px)}
+#amsBtn{background:rgba(20,22,28,.88);color:#eee;border:0;border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.5);white-space:nowrap}
+#amsBtn:hover,#hReset:hover{background:#3d566e}
+#amsBody{background:rgba(20,22,28,.94);border-radius:8px;padding:9px 11px;font-size:12px;box-shadow:0 2px 10px rgba(0,0,0,.5);width:270px;max-width:calc(100vw - 40px);max-height:calc(100vh - 120px);overflow-y:auto;box-sizing:border-box}
+#amsBody[hidden]{display:none}
+#amsBody label{cursor:pointer;user-select:none;display:flex;align-items:center;gap:5px}
+.amsHead{font-weight:700;font-size:13px;margin-bottom:5px}
+.amsMaster{font-weight:600;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,.15)}
+.amsSub{color:#9aa4b2;font-size:11px;margin:7px 0 3px;text-transform:uppercase;letter-spacing:.04em}
+.amsGrid,.amsStyle{display:grid;gap:3px}
+#amsVars.off{opacity:.45}
+#amsSubVars{text-transform:none;letter-spacing:0}
+.amsAutoRow{margin-top:6px}
+#amsBody label.auto{color:#8fd3ff}
+#amsBody label.auto::after{content:'auto';font-size:10px;color:#0b0d12;background:#8fd3ff;border-radius:3px;padding:0 4px;margin-left:2px}
+.amsFoot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;padding-top:7px;border-top:1px solid rgba(255,255,255,.15)}
+#hReset{background:#2c3e50;color:#fff;border:0;border-radius:4px;padding:4px 9px;cursor:pointer;font-size:12px}
 #loading{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1002;background:rgba(0,0,0,.7);padding:10px 16px;border-radius:6px;display:none}
 .wind-canvas{position:absolute;left:0;top:0;pointer-events:none}
 .leaflet-zoom-anim .wind-canvas{visibility:hidden}
@@ -44,7 +66,10 @@ html,body{margin:0;height:100%;background:#111;font-family:system-ui,-apple-syst
   #validtime{font-size:14px}
   .srow{grid-template-columns:96px 1fr 48px}
   .srow input[type=range]{height:28px}
-  #legend{transform:scale(.8);transform-origin:bottom right;bottom:30px}
+  #legend{transform:scale(.7);transform-origin:bottom right;bottom:30px}
+  #ams{bottom:30px;left:8px}
+  #amsBtn{font-size:11px;padding:6px 8px}
+  #amsBody label{min-height:26px}
   .leaflet-control-attribution{font-size:9px!important;max-width:100%}
   .leaflet-top.leaflet-left{z-index:1001}
 }
