@@ -1,13 +1,15 @@
-/* ECMWF wind viewer: Leaflet map + three canvas layers (speed colours, particles, barbs). */
+/* ECMWF viewer: Leaflet map + canvas layers (colour shading, particles, isobars, barbs). */
 (function () {
 'use strict';
 const MS2KT = 1.943844;
-let meta = null, field = null, stepIdx = 0;
-const cache = new Map();   // step index -> decoded field (small LRU so long scrubbing doesn't eat memory)
+let INDEX = null, meta = null, field = null, stepIdx = 0;
+const cache = new Map();   // "run:step" -> decoded step (small LRU so long scrubbing doesn't eat memory)
 const CACHE_MAX = 10;
+const $ = id => document.getElementById(id);
 
 // ---------- user settings (saved in localStorage) ----------
-const DEFAULTS = { units: 'kt', shade: 'speed', speed: 0.4, width: 1.0, trail: 6, density: 1.0 };
+const DEFAULTS = { units: 'kt', tempUnit: 'F', precipUnit: 'in', shade: 'speed', precipPeriod: '3',
+  speed: 0.4, width: 1.0, trail: 6, density: 1.0, particles: true, barbs: true, isobars: false };
 const UNITS = {
   kt:  { f: 1.943844, label: 'kt',   name: 'knots', ticks: [0, 10, 20, 30, 40, 50, 60, 80, 100] },
   mph: { f: 2.236936, label: 'mph',  name: 'mph',   ticks: [0, 20, 40, 60, 80, 100] },
@@ -19,10 +21,18 @@ try {
   const saved = JSON.parse(localStorage.getItem('windSettings') || '{}');
   for (const k in DEFAULTS) if (k in saved && typeof saved[k] === typeof DEFAULTS[k]) settings[k] = saved[k];
   if (!UNITS[settings.units]) settings.units = DEFAULTS.units;
-  if (!['speed', 'gust', 'off'].includes(settings.shade)) settings.shade = DEFAULTS.shade;
+  if (!['speed', 'gust', 'temp', 'precip', 'off'].includes(settings.shade)) settings.shade = DEFAULTS.shade;
+  if (!['3', '6', '24', 'total'].includes(settings.precipPeriod)) settings.precipPeriod = DEFAULTS.precipPeriod;
+  if (!['F', 'C'].includes(settings.tempUnit)) settings.tempUnit = 'F';
+  if (!['in', 'mm'].includes(settings.precipUnit)) settings.precipUnit = 'in';
 } catch (e) {}
 function saveSettings() { try { localStorage.setItem('windSettings', JSON.stringify(settings)); } catch (e) {} }
 function fmtSpeed(ms) { const u = UNITS[settings.units]; const v = ms * u.f; return (settings.units === 'ms' ? v.toFixed(1) : v.toFixed(0)) + ' ' + u.label; }
+function fmtTemp(c) { return settings.tempUnit === 'F' ? (c * 9 / 5 + 32).toFixed(0) + '°F' : c.toFixed(1) + '°C'; }
+function fmtPrecip(mm) {
+  if (settings.precipUnit === 'mm') return (mm < 10 ? mm.toFixed(1) : mm.toFixed(0)) + ' mm';
+  const i = mm / 25.4; return (i < 10 ? i.toFixed(2) : i.toFixed(1)) + ' in';
+}
 // trail length 1..10 -> per-frame fade (how much of the old trail survives each frame)
 function trailFade() { return 0.80 + settings.trail * 0.0185; }
 
@@ -31,6 +41,7 @@ const map = L.map('map', { center: [30, 0], zoom: 2, minZoom: 1, maxZoom: 12, wo
 map.createPane('shade'); map.getPane('shade').style.zIndex = 350;
 map.createPane('particles'); map.getPane('particles').style.zIndex = 420;
 map.createPane('barbs'); map.getPane('barbs').style.zIndex = 430;
+map.createPane('isobars'); map.getPane('isobars').style.zIndex = 425; map.getPane('isobars').style.pointerEvents = 'none';
 map.createPane('labels'); map.getPane('labels').style.zIndex = 440; map.getPane('labels').style.pointerEvents = 'none';
 map.createPane('coast'); map.getPane('coast').style.zIndex = 400; map.getPane('coast').style.pointerEvents = 'none';
 const dataAttrib = 'Wind data: <a href="https://www.ecmwf.int/en/forecasts/datasets/open-data">ECMWF open data</a> (CC BY 4.0) | Coastlines: Natural Earth';
@@ -46,13 +57,10 @@ const coastRenderer = L.canvas({ pane: 'coast', padding: 0.3 });
 fetch('vendor/coast.geojson').then(r => r.json()).then(g => L.geoJSON(g, { renderer: coastRenderer, interactive: false, style: { color: '#e8e8e8', weight: 1, opacity: 0.75 } }).addTo(map));
 fetch('vendor/borders.geojson').then(r => r.json()).then(g => L.geoJSON(g, { renderer: coastRenderer, interactive: false, style: { color: '#bbbbbb', weight: 0.7, opacity: 0.55, dashArray: '3 3' } }).addTo(map));
 
-// ---------- canvas layer helper ----------
-function makeCanvas(pane) {
-  const c = L.DomUtil.create('canvas', 'wind-canvas', map.getPane(pane));
-  return c;
-}
+// ---------- canvas layers ----------
+function makeCanvas(pane) { return L.DomUtil.create('canvas', 'wind-canvas', map.getPane(pane)); }
 const dpr = Math.min(window.devicePixelRatio || 1, 2);
-const shadeCv = makeCanvas('shade'), partCv = makeCanvas('particles'), barbCv = makeCanvas('barbs');
+const shadeCv = makeCanvas('shade'), partCv = makeCanvas('particles'), isoCv = makeCanvas('isobars'), barbCv = makeCanvas('barbs');
 function fitCanvas(c, ratio) {
   const s = map.getSize();
   c.width = Math.round(s.x * ratio); c.height = Math.round(s.y * ratio);
@@ -60,55 +68,93 @@ function fitCanvas(c, ratio) {
   L.DomUtil.setPosition(c, map.containerPointToLayerPoint([0, 0]));
 }
 
-// ---------- field sampling ----------
-function decode(img, st) {
-  const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
-  const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
-  const px = ctx.getImageData(0, 0, img.width, img.height).data;
-  const n = img.width * img.height, u = new Float32Array(n), v = new Float32Array(n);
-  const ur = (st.uMax - st.uMin) / 255, vr = (st.vMax - st.vMin) / 255;
-  for (let i = 0; i < n; i++) { u[i] = st.uMin + px[i * 4] * ur; v[i] = st.vMin + px[i * 4 + 1] * vr; }
-  let g = null;
-  if (st.gMax !== undefined) {   // gust in the blue channel (not defined at +0h)
-    g = new Float32Array(n); const gr = (st.gMax - st.gMin) / 255;
-    for (let i = 0; i < n; i++) g[i] = st.gMin + px[i * 4 + 2] * gr;
-  }
-  return { u, v, g, w: img.width, h: img.height };
-}
-function loadStep(i) {
-  if (cache.has(i)) { const f = cache.get(i); cache.delete(i); cache.set(i, f); return Promise.resolve(f); }
-  const st = meta.steps[i];
+// ---------- data loading ----------
+// Each forecast step = PNG images whose colour channels hold 8-bit scaled values:
+//   wind_XXX.png: R=u, G=v, B=gust   met_XXX.png: R=2 m temp, G=MSL pressure, B=precip since run start
+//   pcp_XXX.png:  R/G/B = precip in previous 3 h / 6 h / 24 h  (loaded only when the precip layer is on)
+function runBase() { return 'data/runs/' + meta.id + '/'; }
+function bust() { return '?v=' + encodeURIComponent(meta.generated + meta.res); }
+function loadImg(src) {
   return new Promise((res, rej) => {
     const img = new Image();
     img.onload = () => {
-      const f = decode(img, st); cache.set(i, f);
-      while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
-      res(f);
+      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+      const ctx = c.getContext('2d', { willReadFrequently: true }); ctx.drawImage(img, 0, 0);
+      res({ w: img.width, h: img.height, px: ctx.getImageData(0, 0, img.width, img.height).data });
     };
-    img.onerror = rej;
-    img.src = 'data/' + st.file + '?r=' + encodeURIComponent(meta.run);
+    img.onerror = () => rej(new Error('failed to load ' + src));
+    img.src = src;
   });
 }
-// bilinear interpolation; returns [u,v] m/s or null
-function sample(lat, lon) {
+function cacheGet(k) { if (!cache.has(k)) return null; const f = cache.get(k); cache.delete(k); cache.set(k, f); return f; }
+function cachePut(k, f) { cache.set(k, f); while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value); }
+async function loadStep(i) {
+  const key = meta.id + ':' + meta.res + ':' + i;
+  const hit = cacheGet(key); if (hit) return hit;
+  const st = meta.steps[i], n = String(st.hour).padStart(3, '0');
+  const [w, m] = await Promise.all([loadImg(runBase() + 'wind_' + n + '.png' + bust()), loadImg(runBase() + 'met_' + n + '.png' + bust())]);
+  const f = { key, st, w: w.w, h: w.h, wind: w.px, met: m.px, pcp: null, iso: null };
+  cachePut(key, f); return f;
+}
+async function loadPcp(f) {
+  if (f.pcp) return f;
+  const n = String(f.st.hour).padStart(3, '0');
+  f.pcp = (await loadImg(runBase() + 'pcp_' + n + '.png' + bust())).px; return f;
+}
+async function loadIso(f) {
+  if (f.iso) return f;
+  const n = String(f.st.hour).padStart(3, '0');
+  const j = await fetch(runBase() + 'isobars_' + n + '.json' + bust()).then(r => r.json());
+  // decode delta-encoded integer tenths of a degree
+  j.lines.forEach(l => {
+    const d = l.d, pts = new Float32Array(d.length); let x = 0, y = 0, x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+    for (let k = 0; k < d.length; k += 2) { x += d[k]; y += d[k + 1]; pts[k] = x / 10; pts[k + 1] = y / 10;
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+    l.pts = pts; l.bb = [x0 / 10, y0 / 10, x1 / 10, y1 / 10]; delete l.d;
+  });
+  f.iso = j; return f;
+}
+
+// ---------- field sampling (bilinear on the 8-bit values) ----------
+// returns [x0, x1, y0, y1 indices, weights] for a lat/lon, or null
+function cell(lat, lon) {
   if (!field || lat > 90 || lat < -90) return null;
   lon = ((lon + 180) % 360 + 360) % 360 - 180;
   const x = (lon - meta.lon0) / meta.dlon, y = (meta.lat0 - lat) / meta.dlat;
   const x0 = Math.floor(x), y0 = Math.min(Math.floor(y), field.h - 2), fx = x - x0, fy = y - y0;
-  const x1 = (x0 + 1) % field.w, W = field.w;
-  const i00 = y0 * W + x0, i10 = y0 * W + x1, i01 = (y0 + 1) * W + x0, i11 = (y0 + 1) * W + x1;
-  const a = (1 - fx) * (1 - fy), b = fx * (1 - fy), c = (1 - fx) * fy, d = fx * fy;
-  return [field.u[i00] * a + field.u[i10] * b + field.u[i01] * c + field.u[i11] * d,
-          field.v[i00] * a + field.v[i10] * b + field.v[i01] * c + field.v[i11] * d];
+  const W = field.w, x1 = (x0 + 1) % W;
+  return [(y0 * W + x0) * 4, (y0 * W + x1) * 4, ((y0 + 1) * W + x0) * 4, ((y0 + 1) * W + x1) * 4,
+          (1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy];
 }
-// bilinear gust (m/s) or null when the step has no gust (+0h)
+function bil(px, c, ch) { return px[c[0] + ch] * c[4] + px[c[1] + ch] * c[5] + px[c[2] + ch] * c[6] + px[c[3] + ch] * c[7]; }
+const lin = (b, lo, hi) => lo + b / 255 * (hi - lo);
+const sq = (b, mx) => { const t = b / 255; return t * t * mx; };
+// wind [u,v] m/s or null
+function sample(lat, lon) {
+  const c = cell(lat, lon); if (!c) return null; const s = field.st;
+  return [lin(bil(field.wind, c, 0), s.uMin, s.uMax), lin(bil(field.wind, c, 1), s.vMin, s.vMax)];
+}
 function sampleGust(lat, lon) {
-  if (!field || !field.g || lat > 90 || lat < -90) return null;
-  lon = ((lon + 180) % 360 + 360) % 360 - 180;
-  const x = (lon - meta.lon0) / meta.dlon, y = (meta.lat0 - lat) / meta.dlat;
-  const x0 = Math.floor(x), y0 = Math.min(Math.floor(y), field.h - 2), fx = x - x0, fy = y - y0;
-  const x1 = (x0 + 1) % field.w, W = field.w, G = field.g;
-  return G[y0 * W + x0] * (1 - fx) * (1 - fy) + G[y0 * W + x1] * fx * (1 - fy) + G[(y0 + 1) * W + x0] * (1 - fx) * fy + G[(y0 + 1) * W + x1] * fx * fy;
+  const s = field && field.st; if (!s || s.gMax === undefined) return null;
+  const c = cell(lat, lon); return c ? lin(bil(field.wind, c, 2), s.gMin, s.gMax) : null;
+}
+function sampleTemp(lat, lon) { const c = cell(lat, lon); return c ? lin(bil(field.met, c, 0), field.st.tMin, field.st.tMax) : null; }
+function samplePres(lat, lon) { const c = cell(lat, lon); return c ? lin(bil(field.met, c, 1), field.st.pMin, field.st.pMax) : null; }
+function sampleAcc(lat, lon) { const c = cell(lat, lon); return c ? sq(bil(field.met, c, 2), field.st.aMax) : null; }
+const PCH = { '3': [0, 'r3Max'], '6': [1, 'r6Max'], '24': [2, 'r24Max'] };
+function samplePcp(lat, lon, period) {
+  if (period === 'total') return sampleAcc(lat, lon);
+  if (!field || !field.pcp) return null; const [ch, k] = PCH[period], mx = field.st[k]; if (mx == null) return null;
+  const c = cell(lat, lon); return c ? sq(bil(field.pcp, c, ch), mx) : null;
+}
+// precip period actually shown at this step (falls back when the chosen one isn't available)
+function pcpAvail(p, st) { return p === 'total' ? st.hour > 0 : st[PCH[p][1]] != null; }
+function effPeriod() {
+  const st = meta && meta.steps[stepIdx]; if (!st) return settings.precipPeriod;
+  const want = settings.precipPeriod;
+  if (pcpAvail(want, st)) return want;
+  for (const p of { '3': ['6'], '6': ['3'], '24': ['6', '3'] }[want] || []) if (pcpAvail(p, st)) return p;
+  return null;
 }
 // screen geometry helpers: in Web Mercator, lon is linear in x and lat depends only on y
 function viewGeom() {
@@ -119,22 +165,46 @@ function viewGeom() {
   return { w: s.x, h: s.y, lonL, dLon: (lonR - lonL) / s.x, rowLat };
 }
 
-// ---------- colour scale (knots) ----------
-const SCALE = [[0,[98,113,183]],[5,[57,97,159]],[10,[74,148,169]],[15,[77,141,123]],[20,[83,165,83]],[25,[53,159,53]],
-  [30,[167,157,81]],[35,[159,127,58]],[40,[161,108,92]],[50,[129,58,78]],[60,[175,80,136]],[70,[117,74,147]],[85,[109,97,163]],[100,[230,230,230]]];
-const LUT = new Uint8Array(101 * 3);
-for (let k = 0; k <= 100; k++) {
-  let j = 0; while (j < SCALE.length - 2 && k > SCALE[j + 1][0]) j++;
-  const [k0, c0] = SCALE[j], [k1, c1] = SCALE[j + 1], t = Math.min(1, Math.max(0, (k - k0) / (k1 - k0)));
-  for (let ch = 0; ch < 3; ch++) LUT[k * 3 + ch] = Math.round(c0[ch] + (c1[ch] - c0[ch]) * t);
+// ---------- colour scales ----------
+function makeLut(scale, lo, hi) {   // linear-interpolated LUT for integer values lo..hi
+  const n = hi - lo + 1, lut = new Uint8Array(n * 3);
+  for (let k = 0; k < n; k++) {
+    const v = lo + k; let j = 0; while (j < scale.length - 2 && v > scale[j + 1][0]) j++;
+    const [k0, c0] = scale[j], [k1, c1] = scale[j + 1], t = Math.min(1, Math.max(0, (v - k0) / (k1 - k0)));
+    for (let ch = 0; ch < 3; ch++) lut[k * 3 + ch] = Math.round(c0[ch] + (c1[ch] - c0[ch]) * t);
+  }
+  return lut;
+}
+const LUT = makeLut([[0,[98,113,183]],[5,[57,97,159]],[10,[74,148,169]],[15,[77,141,123]],[20,[83,165,83]],[25,[53,159,53]],
+  [30,[167,157,81]],[35,[159,127,58]],[40,[161,108,92]],[50,[129,58,78]],[60,[175,80,136]],[70,[117,74,147]],[85,[109,97,163]],[100,[230,230,230]]], 0, 100);
+// temperature in °F, -40..120
+const TLUT = makeLut([[-40,[235,225,255]],[-20,[190,150,235]],[0,[130,80,200]],[10,[80,70,190]],[20,[50,110,220]],[32,[70,170,240]],
+  [40,[80,200,200]],[50,[70,180,110]],[60,[150,205,80]],[70,[240,220,70]],[80,[245,160,50]],[90,[230,90,40]],[100,[190,30,40]],[110,[140,10,60]],[120,[100,0,80]]], -40, 120);
+// radar-like precipitation colours; thresholds depend on unit and period
+const PCOL = [[170,225,170],[110,200,110],[50,165,60],[25,125,45],[230,230,60],[245,195,50],[245,145,35],[230,80,30],[205,30,40],[170,20,90],[150,50,190],[200,140,240],[245,225,255]];
+const PTHR = {
+  in: { int: [0.01,0.02,0.05,0.1,0.15,0.25,0.5,0.75,1,1.5,2,3,4], total: [0.05,0.1,0.25,0.5,1,1.5,2,3,4,6,8,12,20] },
+  mm: { int: [0.1,0.5,1,2,4,6,10,15,20,30,50,75,100], total: [1,2.5,5,10,20,30,50,75,100,150,200,300,500] }
+};
+function pThresholds(period) { return PTHR[settings.precipUnit][period === 'total' ? 'total' : 'int']; }
+function pIndex(mm, thr) {  // -1 = transparent
+  const v = settings.precipUnit === 'in' ? mm / 25.4 : mm; let k = -1;
+  while (k + 1 < thr.length && v >= thr[k + 1]) k++; return k;
 }
 
-// ---------- speed shading ----------
+// ---------- colour shading ----------
 function drawShade() {
   fitCanvas(shadeCv, 1);
   const ctx = shadeCv.getContext('2d'); ctx.clearRect(0, 0, shadeCv.width, shadeCv.height);
   const mode = settings.shade;
-  if (!field || mode === 'off' || (mode === 'gust' && !field.g)) return;
+  if (!field || mode === 'off') return;
+  if (mode === 'gust' && field.st.gMax === undefined) return;
+  let period = null, thr = null;
+  if (mode === 'precip') {
+    period = effPeriod(); if (!period) return;
+    if (period !== 'total' && !field.pcp) { const f = field; loadPcp(f).then(() => { if (f === field) { drawShade(); } }); return; }
+    thr = pThresholds(period);
+  }
   const g = viewGeom(), R = 3, sw = Math.ceil(g.w / R), sh = Math.ceil(g.h / R);
   const off = document.createElement('canvas'); off.width = sw; off.height = sh;
   const octx = off.getContext('2d'), im = octx.createImageData(sw, sh), d = im.data;
@@ -142,11 +212,21 @@ function drawShade() {
     const lat = g.rowLat[Math.min(g.h, j * R + 1)];
     for (let i = 0; i < sw; i++) {
       const lon = g.lonL + (i * R + 1) * g.dLon, o = (j * sw + i) * 4;
-      let ms;
-      if (mode === 'gust') { ms = sampleGust(lat, lon); if (ms === null) continue; }
-      else { const p = sample(lat, lon); if (!p) continue; ms = Math.hypot(p[0], p[1]); }
-      const k = Math.min(100, Math.round(ms * MS2KT));
-      d[o] = LUT[k * 3]; d[o + 1] = LUT[k * 3 + 1]; d[o + 2] = LUT[k * 3 + 2]; d[o + 3] = 150;
+      let r, gg, b, a;
+      if (mode === 'speed' || mode === 'gust') {
+        let ms;
+        if (mode === 'gust') ms = sampleGust(lat, lon); else { const p = sample(lat, lon); ms = p && Math.hypot(p[0], p[1]); }
+        if (ms === null) continue;
+        const k = Math.min(100, Math.round(ms * MS2KT)) * 3; r = LUT[k]; gg = LUT[k + 1]; b = LUT[k + 2]; a = 150;
+      } else if (mode === 'temp') {
+        const c = sampleTemp(lat, lon); if (c === null) continue;
+        const k = (Math.min(120, Math.max(-40, Math.round(c * 9 / 5 + 32))) + 40) * 3; r = TLUT[k]; gg = TLUT[k + 1]; b = TLUT[k + 2]; a = 165;
+      } else {
+        const mm = samplePcp(lat, lon, period); if (mm === null) continue;
+        const k = pIndex(mm, thr); if (k < 0) continue;
+        [r, gg, b] = PCOL[k]; a = 215;
+      }
+      d[o] = r; d[o + 1] = gg; d[o + 2] = b; d[o + 3] = a;
     }
   }
   octx.putImageData(im, 0, 0);
@@ -195,7 +275,7 @@ function drawBarbs() {
   fitCanvas(barbCv, dpr);
   const ctx = barbCv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, barbCv.width, barbCv.height);
-  if (!field || !document.getElementById('tBarbs').checked) return;
+  if (!field || !settings.barbs) return;
   const z = map.getZoom(), pxPerDeg = 256 * Math.pow(2, z) / 360;
   const spacingPx = 52;
   // thin barbs: take every n-th model grid point so they are ~spacingPx apart
@@ -206,7 +286,6 @@ function drawBarbs() {
   const size = 22;
   ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.fillStyle = 'rgba(255,255,255,0.92)';
   ctx.lineWidth = 1.3; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  // in latitude use a spacing that keeps vertical gaps similar on screen (Mercator stretch)
   let lat = Math.ceil(latMax / stepDeg) * stepDeg;
   let count = 0;
   while (lat >= latMin && count < 6000) {
@@ -215,16 +294,71 @@ function drawBarbs() {
       const pt = map.latLngToContainerPoint([lat, lon]);
       drawBarb(ctx, pt.x, pt.y, p[0], p[1], lat, size); count++;
     }
-    // next row: step so that the on-screen vertical spacing stays ~ the horizontal spacing
+    // next row: keep the on-screen vertical spacing ~ the horizontal spacing (Mercator stretch)
     const k = Math.max(1, Math.round(n * Math.cos(lat * Math.PI / 180)));
     lat -= k * meta.dlat;
     lat = Math.round(lat / meta.dlat) * meta.dlat;
   }
 }
 
+// ---------- isobars (MSL pressure every 4 hPa) + H/L ----------
+function drawIsobars() {
+  fitCanvas(isoCv, dpr);
+  const ctx = isoCv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, isoCv.width, isoCv.height);
+  if (!field || !settings.isobars) return;
+  if (!field.iso) { const f = field; loadIso(f).then(() => { if (f === field) drawIsobars(); }); return; }
+  const b = map.getBounds(), W = b.getWest(), E = b.getEast(), S = b.getSouth(), N = b.getNorth();
+  const size = map.getSize();
+  const offsets = []; for (let o = Math.floor((W + 180) / 360) * 360; o - 180 <= E; o += 360) offsets.push(o);
+  const labels = [], placed = [];
+  const free = (x, y, r) => placed.every(p => Math.abs(p[0] - x) > r || Math.abs(p[1] - y) > r * 0.6);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  for (const l of field.iso.lines) {
+    if (l.bb[1] > N || l.bb[3] < S) continue;
+    for (const off of offsets) {
+      if (l.bb[0] + off > E || l.bb[2] + off < W) continue;
+      const p = l.pts; let dist = 0, nextLab = 120, px = 0, py = 0;
+      ctx.beginPath();
+      for (let k = 0; k < p.length; k += 2) {
+        const pt = map.latLngToContainerPoint([p[k + 1], p[k] + off]);
+        if (k === 0) ctx.moveTo(pt.x, pt.y);
+        else {
+          ctx.lineTo(pt.x, pt.y); dist += Math.hypot(pt.x - px, pt.y - py);
+          if (dist > nextLab && pt.x > 30 && pt.y > 20 && pt.x < size.x - 30 && pt.y < size.y - 20) {
+            if (free(pt.x, pt.y, 70)) { labels.push([pt.x, pt.y, l.v]); placed.push([pt.x, pt.y]); }
+            nextLab = dist + 380;
+          }
+        }
+        px = pt.x; py = pt.y;
+      }
+      const major = l.v % 20 === 0 || l.v === 1012;
+      ctx.strokeStyle = 'rgba(15,15,20,0.55)'; ctx.lineWidth = major ? 3.6 : 2.8; ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = major ? 1.8 : 1.1; ctx.stroke();
+    }
+  }
+  ctx.font = '600 11px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const [x, y, v] of labels) {
+    const t = String(v), w = ctx.measureText(t).width + 6;
+    ctx.fillStyle = 'rgba(20,22,28,0.85)'; ctx.fillRect(x - w / 2, y - 7, w, 14);
+    ctx.fillStyle = '#fff'; ctx.fillText(t, x, y);
+  }
+  for (const c of field.iso.hl) {
+    if (c.lat < S || c.lat > N) continue;
+    for (const off of offsets) {
+      if (c.lon + off < W || c.lon + off > E) continue;
+      const pt = map.latLngToContainerPoint([c.lat, c.lon + off]);
+      ctx.font = '800 22px system-ui, sans-serif'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+      ctx.fillStyle = c.t === 'H' ? '#5aa9ff' : '#ff5c5c';
+      ctx.strokeText(c.t, pt.x, pt.y); ctx.fillText(c.t, pt.x, pt.y);
+      ctx.font = '700 11px system-ui, sans-serif'; ctx.lineWidth = 2.5;
+      ctx.strokeText(c.v, pt.x, pt.y + 16); ctx.fillStyle = '#fff'; ctx.fillText(c.v, pt.x, pt.y + 16);
+    }
+  }
+}
+
 // ---------- particles ----------
-let parts = [], geom = null, animOn = false, moving = false;
-let PART_AGE = 90;
+let parts = [], geom = null, moving = false, PART_AGE = 90, looping = false;
 function partAge() { return Math.round(Math.min(400, 90 / Math.sqrt(Math.max(0.05, settings.speed)))); }
 function resetParticles() {
   fitCanvas(partCv, 1);
@@ -240,7 +374,7 @@ function stepParticles() {
   ctx.globalCompositeOperation = 'destination-in';
   ctx.fillStyle = 'rgba(0,0,0,' + trailFade().toFixed(4) + ')'; ctx.fillRect(0, 0, partCv.width, partCv.height);
   ctx.globalCompositeOperation = 'source-over';
-  if (!field || !document.getElementById('tParticles').checked || moving) return;
+  if (!field || !settings.particles || moving) return;
   const k = settings.speed * 0.11 * Math.pow(1.15, map.getZoom() - 2);   // pixels per frame per m/s
   ctx.lineWidth = settings.width; ctx.strokeStyle = 'rgba(255,255,255,0.7)';
   ctx.beginPath();
@@ -257,85 +391,124 @@ function stepParticles() {
 }
 function loop() { stepParticles(); requestAnimationFrame(loop); }
 
-// ---------- UI ----------
-function fmtTime(iso) {
-  const d = new Date(iso.replace('Z', ':00Z'));
-  return d.toUTCString().replace(':00 GMT', ' UTC');
-}
-function redrawStatic() { drawShade(); drawBarbs(); }
+// ---------- time / run UI ----------
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function parseT(iso) { return new Date(iso.replace('Z', ':00Z')); }
+function fmtTime(iso) { return parseT(iso).toUTCString().replace(':00 GMT', ' UTC'); }
+function runLabel(iso) { const d = parseT(iso); return DAYS[d.getUTCDay()] + ' ' + d.getUTCDate() + ' ' + MONS[d.getUTCMonth()] + ' ' + String(d.getUTCHours()).padStart(2, '0') + 'Z'; }
+function redrawStatic() { drawShade(); drawIsobars(); drawBarbs(); }
+let loadToken = 0;
 async function setStep(i) {
   stepIdx = i;
   const st = meta.steps[i];
-  document.getElementById('stepLabel').textContent = '+' + st.hour + 'h';
-  document.getElementById('stepLabel').title = 'Day ' + (st.hour / 24).toFixed(1);
-  document.getElementById('validtime').textContent = 'Valid ' + fmtTime(st.valid);
-  const ld = document.getElementById('loading');
+  $('stepLabel').textContent = '+' + st.hour + 'h';
+  $('stepLabel').title = 'Day ' + (st.hour / 24).toFixed(1);
+  $('validtime').textContent = 'Valid ' + fmtTime(st.valid);
+  const tok = ++loadToken, ld = $('loading');
   const t = setTimeout(() => ld.style.display = 'block', 150);
-  field = await loadStep(i);
-  clearTimeout(t); ld.style.display = 'none';
-  if (i !== stepIdx) return;
-  redrawStatic(); updateShadeNote();
-  // prefetch next step
-  if (i + 1 < meta.steps.length) loadStep(i + 1);
+  let f;
+  try { f = await loadStep(i); } finally { clearTimeout(t); if (tok === loadToken) ld.style.display = 'none'; }
+  if (tok !== loadToken) return;
+  field = f;
+  redrawStatic(); updateNotes();
+  if (i + 1 < meta.steps.length) loadStep(i + 1).catch(() => {});   // prefetch next step
 }
 let playTimer = null;
-document.getElementById('play').onclick = function () {
+$('play').onclick = function () {
   if (playTimer) { clearInterval(playTimer); playTimer = null; this.textContent = '▶'; return; }
   this.textContent = '❚❚';
-  playTimer = setInterval(() => {
-    const s = document.getElementById('slider'); const n = (stepIdx + 1) % meta.steps.length;
-    s.value = n; setStep(n);
-  }, 1200);
+  playTimer = setInterval(() => { const n = (stepIdx + 1) % meta.steps.length; $('slider').value = n; setStep(n); }, 1200);
 };
-document.getElementById('slider').oninput = e => setStep(+e.target.value);
-function updateShadeNote() {
-  const n = document.getElementById('shadeNote'), st = meta && meta.steps[stepIdx];
-  if (settings.shade !== 'gust' || !st) { n.textContent = ''; return; }
-  n.textContent = st.gustPeriod ? 'max in previous ' + st.gustPeriod + ' h' : 'no gust at +0h (starts +3h)';
+$('slider').oninput = e => setStep(+e.target.value);
+
+// precip period menu + notes
+function updateNotes() {
+  const st = meta && meta.steps[stepIdx], n = $('shadeNote'), sel = $('pcpSel');
+  sel.parentElement.style.display = settings.shade === 'precip' ? '' : 'none';
+  if (!st) return;
+  for (const o of sel.options) if (o.value !== '1') o.disabled = !pcpAvail(o.value, st);
+  let txt = '';
+  if (settings.shade === 'gust') txt = st.gustPeriod ? 'max gust in previous ' + st.gustPeriod + ' h' : 'no gust at +0h (starts +3h)';
+  else if (settings.shade === 'precip') {
+    const p = effPeriod(), want = settings.precipPeriod;
+    if (!p) txt = st.hour === 0 ? 'no precipitation at +0h' : want + ' h totals not available at this step';
+    else {
+      txt = p === 'total' ? 'total since run start (' + st.hour + ' h)' : p + ' h total, ending at valid time';
+      if (p !== want) txt += want === '3' ? ' (3 h only to +144h)' : want === '24' ? ' (24 h starts at +24h)' : ' (6 h starts at +6h)';
+    }
+  }
+  n.textContent = txt;
+  drawLegend();
 }
-document.getElementById('shadeSel').value = settings.shade;
-document.getElementById('shadeSel').onchange = e => { settings.shade = e.target.value; saveSettings(); drawShade(); drawLegendTicks(); updateShadeNote(); };
-document.getElementById('tBarbs').onchange = drawBarbs;
-document.getElementById('tParticles').onchange = () => { const c = partCv.getContext('2d'); c.clearRect(0, 0, partCv.width, partCv.height); };
+$('shadeSel').value = settings.shade; $('pcpSel').value = settings.precipPeriod;
+$('shadeSel').onchange = e => { settings.shade = e.target.value; saveSettings(); drawShade(); updateNotes(); };
+$('pcpSel').onchange = e => { if (e.target.value === '1') { e.target.value = settings.precipPeriod; return; } settings.precipPeriod = e.target.value; saveSettings(); drawShade(); updateNotes(); };
+[['tParticles', 'particles'], ['tBarbs', 'barbs'], ['tIsobars', 'isobars']].forEach(([id, k]) => {
+  $(id).checked = settings[k];
+  $(id).onchange = e => {
+    settings[k] = e.target.checked; saveSettings();
+    if (k === 'particles') partCv.getContext('2d').clearRect(0, 0, partCv.width, partCv.height);
+    if (k === 'barbs') drawBarbs(); if (k === 'isobars') drawIsobars();
+  };
+});
 
 map.on('movestart zoomstart', () => { moving = true; partCv.getContext('2d').clearRect(0, 0, partCv.width, partCv.height); });
 map.on('moveend', () => { moving = false; resetParticles(); redrawStatic(); });
 map.on('resize', () => { resetParticles(); redrawStatic(); });
 
 // hover readout
-const tip = document.getElementById('tooltip');
+const tip = $('tooltip');
 map.on('mousemove', e => {
-  const p = sample(e.latlng.lat, e.latlng.lng);
+  const la = e.latlng.lat, lo = e.latlng.lng, p = sample(la, lo);
   if (!p) { tip.style.display = 'none'; return; }
+  const st = field.st;
   const ms = Math.hypot(p[0], p[1]), dir = (Math.atan2(-p[0], -p[1]) * 180 / Math.PI + 360) % 360;
   const compass = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'][Math.round(dir / 22.5) % 16];
-  const lon = ((e.latlng.lng + 180) % 360 + 360) % 360 - 180;
+  const lon = ((lo + 180) % 360 + 360) % 360 - 180;
   const second = settings.units === 'ms' ? (ms * MS2KT).toFixed(0) + ' kt' : ms.toFixed(1) + ' m/s';
-  const gs = sampleGust(e.latlng.lat, e.latlng.lng), st = meta.steps[stepIdx];
-  const gustTxt = gs === null ? 'Gust: n/a at +0h' : `Gust: <b>${fmtSpeed(gs)}</b> <span style="color:#aaa">(max, previous ${st.gustPeriod} h)</span>`;
-  tip.innerHTML = `Wind <b>${fmtSpeed(ms)}</b> (${second}) from ${dir.toFixed(0)}° ${compass}<br>${gustTxt}<br>` +
-    `<span style="color:#aaa">${e.latlng.lat.toFixed(2)}°, ${lon.toFixed(2)}°</span>`;
+  const gs = sampleGust(la, lo);
+  const grey = s => `<span style="color:#aaa">${s}</span>`;
+  let pc = 'Precip: ' + (st.hour === 0 ? 'n/a at +0h' : '');
+  if (st.hour > 0) {
+    const per = effPeriod();
+    if (per && per !== 'total' && field.pcp) pc += `<b>${fmtPrecip(samplePcp(la, lo, per))}</b> ${grey('(' + per + ' h)')} · `;
+    pc += `<b>${fmtPrecip(sampleAcc(la, lo))}</b> ${grey('since run start')}`;
+  }
+  tip.innerHTML = `Wind <b>${fmtSpeed(ms)}</b> (${second}) from ${dir.toFixed(0)}° ${compass}<br>` +
+    (gs === null ? 'Gust: n/a at +0h' : `Gust: <b>${fmtSpeed(gs)}</b> ${grey('(max, previous ' + st.gustPeriod + ' h)')}`) + '<br>' +
+    `Temp: <b>${fmtTemp(sampleTemp(la, lo))}</b> · Pressure: <b>${samplePres(la, lo).toFixed(0)} hPa</b><br>${pc}<br>` +
+    grey(`${la.toFixed(2)}°, ${lon.toFixed(2)}°`);
   tip.style.display = 'block';
-  tip.style.left = (e.containerPoint.x + 14) + 'px'; tip.style.top = (e.containerPoint.y + 14) + 'px';
+  const x = e.containerPoint.x + 14, y = e.containerPoint.y + 14, sz = map.getSize();
+  tip.style.left = Math.min(x, sz.x - tip.offsetWidth - 6) + 'px'; tip.style.top = Math.min(y, sz.y - tip.offsetHeight - 6) + 'px';
 });
 map.on('mouseout', () => tip.style.display = 'none');
 
-// legend ticks: the colour scale runs 0..100 kt; label it in the chosen unit
-function drawLegendTicks() {
-  const u = UNITS[settings.units], ticks = document.getElementById('legendTicks');
-  ticks.innerHTML = '';
-  const maxVal = 100 / MS2KT * u.f;
-  u.ticks.filter(t => t <= maxVal + 1e-6).forEach(t => {
-    const s = document.createElement('span'); s.style.left = (t / maxVal * 260) + 'px'; s.textContent = t; ticks.appendChild(s);
-  });
-  document.getElementById('legendTitle').textContent = (settings.shade === 'gust' ? 'Wind gust' : 'Wind speed') + ' (' + u.name + ')';
+// ---------- legend ----------
+function drawLegend() {
+  const c = $('legendBar'), ctx = c.getContext('2d'), ticks = $('legendTicks'), W = c.width;
+  ctx.clearRect(0, 0, W, c.height); ticks.innerHTML = '';
+  const tick = (x, t) => { const s = document.createElement('span'); s.style.left = x + 'px'; s.textContent = t; ticks.appendChild(s); };
+  const mode = settings.shade;
+  $('legend').style.display = mode === 'off' ? 'none' : '';
+  if (mode === 'speed' || mode === 'gust') {
+    for (let x = 0; x < W; x++) { const k = Math.round(x / (W - 1) * 100); ctx.fillStyle = `rgb(${LUT[k*3]},${LUT[k*3+1]},${LUT[k*3+2]})`; ctx.fillRect(x, 0, 1, c.height); }
+    const u = UNITS[settings.units], maxVal = 100 / MS2KT * u.f;
+    u.ticks.filter(t => t <= maxVal + 1e-6).forEach(t => tick(t / maxVal * W, t));
+    $('legendTitle').textContent = (mode === 'gust' ? 'Wind gust' : 'Wind speed') + ' (' + u.name + ')';
+  } else if (mode === 'temp') {
+    for (let x = 0; x < W; x++) { const k = Math.round(x / (W - 1) * 160); ctx.fillStyle = `rgb(${TLUT[k*3]},${TLUT[k*3+1]},${TLUT[k*3+2]})`; ctx.fillRect(x, 0, 1, c.height); }
+    if (settings.tempUnit === 'F') [-40, -20, 0, 20, 40, 60, 80, 100, 120].forEach(t => tick((t + 40) / 160 * W, t));
+    else [-40, -30, -20, -10, 0, 10, 20, 30, 40, 48].forEach(t => t !== 48 && tick((t * 9 / 5 + 32 + 40) / 160 * W, t));
+    $('legendTitle').textContent = '2 m temperature (°' + settings.tempUnit + ')';
+  } else if (mode === 'precip') {
+    const per = effPeriod() || settings.precipPeriod, thr = pThresholds(per), bw = W / thr.length;
+    thr.forEach((t, k) => { ctx.fillStyle = `rgb(${PCOL[k].join(',')})`; ctx.fillRect(k * bw, 0, bw - 1, c.height); if (k % 2 === 0) tick(k * bw + 2, t); });
+    $('legendTitle').textContent = 'Precipitation, ' + (per === 'total' ? 'total since run start' : per + ' h total') + ' (' + settings.precipUnit + ')';
+  }
 }
-// legend
-(function legend() {
-  const c = document.getElementById('legendBar'), ctx = c.getContext('2d');
-  for (let x = 0; x < c.width; x++) { const k = Math.round(x / (c.width - 1) * 100); ctx.fillStyle = `rgb(${LUT[k*3]},${LUT[k*3+1]},${LUT[k*3+2]})`; ctx.fillRect(x, 0, 1, c.height); }
-  drawLegendTicks();
-  const b = document.getElementById('barbKey'), bc = b.getContext('2d');
+(function barbKey() {
+  const b = $('barbKey'), bc = b.getContext('2d');
   bc.strokeStyle = bc.fillStyle = '#fff'; bc.lineWidth = 1.3; bc.font = '10px sans-serif'; bc.textAlign = 'center';
   [[5, 'half 5'], [10, 'full 10'], [25, '25'], [50, 'pennant 50'], [65, '65']].forEach(([kt, lab], i) => {
     const x = 22 + i * 52, ms = kt / MS2KT;
@@ -346,47 +519,75 @@ function drawLegendTicks() {
 
 // ---------- settings panel ----------
 (function settingsUI() {
-  const btn = document.getElementById('settingsBtn'), box = document.getElementById('settings');
+  const btn = $('settingsBtn'), box = $('settings');
   btn.onclick = () => { const open = box.hidden; box.hidden = !open; btn.setAttribute('aria-expanded', open); btn.textContent = open ? '⚙ Settings ▴' : '⚙ Settings ▾'; };
-  const els = { units: 'sUnits', speed: 'sSpeed', width: 'sWidth', trail: 'sTrail', density: 'sDensity' };
-  const out = {
-    speed: v => v.toFixed(2) + '×', width: v => v.toFixed(2) + ' px',
-    trail: v => String(v), density: v => v.toFixed(2) + '×'
-  };
+  const els = { units: 'sUnits', tempUnit: 'sTemp', precipUnit: 'sPrecip', speed: 'sSpeed', width: 'sWidth', trail: 'sTrail', density: 'sDensity' };
+  const strings = ['units', 'tempUnit', 'precipUnit'];
+  const out = { speed: v => v.toFixed(2) + '×', width: v => v.toFixed(2) + ' px', trail: v => String(v), density: v => v.toFixed(2) + '×' };
   function sync() {
-    for (const k in els) {
-      const el = document.getElementById(els[k]); el.value = settings[k];
-      if (out[k]) document.getElementById('o' + els[k].slice(1)).textContent = out[k](settings[k]);
-    }
+    for (const k in els) { $(els[k]).value = settings[k]; if (out[k]) $('o' + els[k].slice(1)).textContent = out[k](settings[k]); }
   }
   function apply(k) {
-    if (k === 'units') { drawLegendTicks(); tip.style.display = 'none'; }
+    if (strings.includes(k)) { drawLegend(); tip.style.display = 'none'; if (k === 'precipUnit') drawShade(); }
     if (k === 'density' || k === 'speed') { if (meta) resetParticles(); }
     if (k === 'width' || k === 'trail') { if (meta) partCv.getContext('2d').clearRect(0, 0, partCv.width, partCv.height); }
   }
   for (const k in els) {
-    const el = document.getElementById(els[k]);
-    el.addEventListener(k === 'units' ? 'change' : 'input', () => {
-      settings[k] = k === 'units' ? el.value : parseFloat(el.value);
+    const el = $(els[k]);
+    el.addEventListener(strings.includes(k) ? 'change' : 'input', () => {
+      settings[k] = strings.includes(k) ? el.value : parseFloat(el.value);
       sync(); saveSettings(); apply(k);
     });
   }
-  document.getElementById('sReset').onclick = () => {
+  $('sReset').onclick = () => {
     Object.assign(settings, DEFAULTS); sync(); saveSettings();
-    document.getElementById('shadeSel').value = settings.shade; drawShade(); updateShadeNote();
-    drawLegendTicks(); if (meta) resetParticles();
+    $('shadeSel').value = settings.shade; $('pcpSel').value = settings.precipPeriod;
+    $('tParticles').checked = settings.particles; $('tBarbs').checked = settings.barbs; $('tIsobars').checked = settings.isobars;
+    if (meta) { resetParticles(); redrawStatic(); updateNotes(); } else drawLegend();
   };
   sync();
 })();
 
-// ---------- start ----------
-fetch('data/meta.json', { cache: 'no-cache' }).then(r => r.json()).then(m => {
-  meta = m;
-  document.getElementById('runinfo').textContent = 'Model run ' + fmtTime(m.run) + ' · 0.25° grid';
-  const s = document.getElementById('slider'); s.max = m.steps.length - 1; s.value = 0;
+// ---------- model runs ----------
+async function openRun(id, keepValid) {
+  const entry = INDEX.runs.find(r => r.id === id);
+  const m = await fetch('data/runs/' + id + '/meta.json', { cache: 'no-cache' }).then(r => r.json());
+  meta = m; field = null;
+  const latest = INDEX.runs[0].id === id;
+  $('runinfo').textContent = 'Model run ' + fmtTime(m.run) + (latest ? ' (latest)' : '') + ' · ' + m.res + '° grid';
+  const s = $('slider'); s.max = m.steps.length - 1;
+  let idx = 0, note = '';
+  if (keepValid) {
+    const tv = parseT(keepValid).getTime();
+    let best = 0, bd = Infinity;
+    m.steps.forEach((st, k) => { const dd = Math.abs(parseT(st.valid).getTime() - tv); if (dd < bd) { bd = dd; best = k; } });
+    idx = best;
+    if (bd === 0) note = 'Same valid time, +' + m.steps[idx].hour + 'h in this run';
+    else note = 'That valid time is outside this run (to +' + entry.maxHour + 'h): showing nearest step';
+  }
+  $('runNote').textContent = note;
+  s.value = idx;
   resetParticles();
-  setStep(0);
+  await setStep(idx);
+}
+$('runSel').onchange = e => {
+  const keep = meta ? meta.steps[stepIdx].valid : null;
+  openRun(e.target.value, keep);
+};
+
+// ---------- start ----------
+fetch('data/index.json', { cache: 'no-cache' }).then(r => r.json()).then(async ix => {
+  INDEX = ix;
+  const sel = $('runSel');
+  ix.runs.forEach((r, k) => {
+    const o = document.createElement('option'); o.value = r.id;
+    o.textContent = runLabel(r.run) + ' · to +' + r.maxHour + 'h' + (k === 0 ? ' (latest)' : '');
+    sel.appendChild(o);
+  });
+  drawLegend();
+  await openRun(ix.runs[0].id, null);
   loop();
 });
-window._windDebug = { map, sample, sampleGust, settings, get stepIdx() { return stepIdx; }, get field() { return field; }, get meta() { return meta; } };
+window._windDebug = { map, sample, sampleGust, sampleTemp, samplePres, samplePcp, settings, openRun,
+  get stepIdx() { return stepIdx; }, get field() { return field; }, get meta() { return meta; }, get index() { return INDEX; } };
 })();

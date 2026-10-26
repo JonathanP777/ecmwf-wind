@@ -10,7 +10,7 @@ meteorological wind barbs, wind-speed colours and a forecast-hour slider.
 |------|--------------|
 | `index.html`, `app.js`, `style.css` | The website itself (one page, no server code needed). |
 | `update_data.py` | Downloads the newest ECMWF forecast and turns it into small images in `data/`. |
-| `data/` | One PNG per forecast step (`wind_000.png` … `wind_360.png`) + `meta.json` (model run time, list of steps, gust periods). Generated, not stored in git. |
+| `data/` | `index.json` (list of runs) + `runs/<run>/` with images per forecast step and `meta.json`. Generated, not stored in git. |
 | `vendor/` | Leaflet map library + Natural Earth coastlines/borders, stored locally. |
 | `screenshot.py` | Opens the site in a hidden browser and saves pictures to `screenshots/`. |
 
@@ -47,21 +47,38 @@ ECMWF runs the model 4 times a day (00, 06, 12, 18 UTC); open data appears
 roughly 7–9 hours after the run time. Re-running `update_data.py` always grabs
 the newest available run.
 
-## Forecast range and gusts
+## Forecast data, runs and layers
 
-`update_data.py` reads ECMWF's open-data index files directly and always uses the
-**newest run whose last forecast step has been published**:
+`update_data.py` reads ECMWF's open-data index files directly (data.ecmwf.int keeps
+about 4 days of runs) and shows the **5 newest complete runs**. Pick one with the "Run" menu.
+Switching runs keeps the same *valid time* where possible, so you compare like with like.
 
 - **00 and 12 UTC runs:** 0–144 h every 3 h, then 150–360 h every 6 h (85 steps, 15 days).
-- **06 and 18 UTC runs:** 0–144 h every 3 h only (49 steps, 6 days). So for roughly
-  half of each day the slider ends at +144 h, and after the next 00/12 UTC run is
-  published it goes back out to +360 h.
+- **06 and 18 UTC runs:** 0–144 h every 3 h (49 steps, 6 days).
 
-Each PNG stores east-west wind (red), north-south wind (green) and **10 m wind
-gust** (blue). Gust is the ECMWF maximum gust over the period before each step:
-`10fg` max over the previous 1 h for +3…+90 h, `10fg3` max over the previous 3 h for
-+93…+144 h, and `10fg` max over the previous 6 h for +150…+360 h. There is no gust
-at +0 h. The site shows the period next to the "Colours" picker and in the hover readout.
+Layers ("Colours" menu; particles and barbs are always the sustained 10 m wind):
+
+| Layer | ECMWF param | Notes |
+|---|---|---|
+| Wind speed | `10u`, `10v` | knots / mph / km/h / m/s |
+| Wind gust | `10fg` (max previous 1 h to +90 h, previous 6 h after +144 h), `10fg3` (previous 3 h, +93…+144 h) | none at +0 h |
+| Temperature (2 m) | `2t` | °F (default) or °C |
+| Precipitation | `tp` (accumulated from run start) | 3 h (only to +144 h), 6 h (from +6 h), 24 h (from +24 h) totals by differencing, or total since run start. 1 h isn't possible: ECMWF's free data is 3-hourly at best. Inches (default) or mm |
+| Isobars (overlay) | `msl` | every 4 hPa, labelled, with H/L centres; can be combined with any colour layer |
+
+### How the data is stored (size)
+
+For every run and step there are three small PNG images where the colour channels hold
+8-bit scaled values: `wind_XXX.png` (u, v, gust), `met_XXX.png` (temperature, pressure,
+precip since run start) and `pcp_XXX.png` (3/6/24 h precip, loaded only when the precip
+layer is on). There is also `isobars_XXX.json` (contour lines and H/L, compact encoding).
+
+- The **newest run** is published at full 0.25° resolution.
+- The **4 older runs** are published at 0.5° (every other grid point) to keep the site
+  well under GitHub Pages' 1 GB limit.
+
+Built runs are stored in the GitHub Actions cache (one cache entry per run), so each
+6-hourly job only downloads the run that is new.
 
 ## Live website
 

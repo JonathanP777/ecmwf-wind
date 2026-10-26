@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ECMWF Wind Viewer</title>
+<title>ECMWF Forecast Viewer</title>
 <link rel="stylesheet" href="vendor/leaflet.css">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -11,9 +11,11 @@
 <div id="map"></div>
 
 <div id="panel">
-  <div class="titlerow"><div class="title">ECMWF IFS 10 m wind</div>
+  <div class="titlerow"><div class="title">ECMWF IFS forecast</div>
     <button id="settingsBtn" aria-expanded="false" aria-controls="settings" title="Settings">⚙ Settings ▾</button></div>
+  <div class="row"><label for="runSel">Run</label><select id="runSel" title="Model run"></select></div>
   <div id="runinfo">Loading…</div>
+  <div id="runNote"></div>
   <div id="validtime"></div>
   <div class="row">
     <button id="play" title="Play / pause">▶</button>
@@ -23,16 +25,26 @@
   <div class="row toggles">
     <label><input type="checkbox" id="tParticles" checked> Particles</label>
     <label><input type="checkbox" id="tBarbs" checked> Barbs</label>
+    <label><input type="checkbox" id="tIsobars"> Isobars (MSLP)</label>
   </div>
   <div class="row"><label for="shadeSel">Colours</label>
-    <select id="shadeSel"><option value="speed">Wind speed</option><option value="gust">Wind gust</option><option value="off">Off</option></select>
-    <span id="shadeNote"></span></div>
+    <select id="shadeSel"><option value="speed">Wind speed</option><option value="gust">Wind gust</option>
+      <option value="temp">Temperature (2 m)</option><option value="precip">Precipitation</option><option value="off">Off</option></select>
+    <span class="pcpwrap"><select id="pcpSel" title="Precipitation period">
+      <option value="1" disabled>1 h (not available: ECMWF free data is 3-hourly)</option>
+      <option value="3">3 h total</option><option value="6">6 h total</option><option value="24">24 h total</option>
+      <option value="total">Total since run start</option></select></span></div>
+  <div id="shadeNote"></div>
   <div id="settings" hidden>
     <div class="srow"><label for="sUnits">Speed units</label>
       <select id="sUnits">
         <option value="kt">knots (kt)</option><option value="mph">mph</option>
         <option value="kmh">km/h</option><option value="ms">m/s</option>
       </select></div>
+    <div class="srow"><label for="sTemp">Temperature</label>
+      <select id="sTemp"><option value="F">°F</option><option value="C">°C</option></select></div>
+    <div class="srow"><label for="sPrecip">Precipitation</label>
+      <select id="sPrecip"><option value="in">inches (in)</option><option value="mm">millimetres (mm)</option></select></div>
     <div class="srow"><label for="sSpeed">Animation speed</label>
       <input type="range" id="sSpeed" min="0.05" max="1.5" step="0.05"><output id="oSpeed"></output></div>
     <div class="srow"><label for="sWidth">Line width</label>

@@ -1,3 +1,5 @@
 eccodes
 numpy
 pillow
+scipy
+contourpy

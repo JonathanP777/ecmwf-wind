@@ -9,3 +9,4 @@ data/
 *.log
 screenshots/
 .DS_Store
+cache/

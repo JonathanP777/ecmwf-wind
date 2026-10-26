@@ -20,6 +20,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,16 +30,56 @@ jobs:
       - name: Install Python packages
         run: pip install -r requirements.txt
       - name: Check ecCodes
-        run: python -m eccodes selfcheck || python -c "import eccodes; print(eccodes.codes_get_api_version())"
-      - name: Download latest ECMWF forecast
+        run: python -c "import eccodes; print('ecCodes', eccodes.codes_get_api_version())"
+      # Which 5 ECMWF runs should the site show? (newest complete runs)
+      - name: Plan runs
+        id: plan
+        run: python update_data.py plan
+      # Each run, once built, is kept in the GitHub Actions cache, so later jobs only
+      # download runs they have not seen before (and a failed job keeps finished runs).
+      - uses: actions/cache/restore@v4
+        id: r1
+        with: { path: 'cache/${{ steps.plan.outputs.run1 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run1 }}' }
+      - uses: actions/cache/restore@v4
+        id: r2
+        with: { path: 'cache/${{ steps.plan.outputs.run2 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run2 }}' }
+      - uses: actions/cache/restore@v4
+        id: r3
+        with: { path: 'cache/${{ steps.plan.outputs.run3 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run3 }}' }
+      - uses: actions/cache/restore@v4
+        id: r4
+        with: { path: 'cache/${{ steps.plan.outputs.run4 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run4 }}' }
+      - uses: actions/cache/restore@v4
+        id: r5
+        with: { path: 'cache/${{ steps.plan.outputs.run5 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run5 }}' }
+      - name: Download new ECMWF runs and assemble site data
+        env:
+          RUNS: ${{ steps.plan.outputs.runs }}
         run: |
-          for i in 1 2 3; do python update_data.py && break; echo "retrying in 60s"; sleep 60; done
-          test -f data/meta.json
+          for i in 1 2 3; do python update_data.py build && break; echo "retrying in 60s"; sleep 60; done
+          test -f data/index.json
+          du -sh data cache
+      - uses: actions/cache/save@v4
+        if: always() && steps.r1.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.run1 }}/DONE') != ''
+        with: { path: 'cache/${{ steps.plan.outputs.run1 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run1 }}' }
+      - uses: actions/cache/save@v4
+        if: always() && steps.r2.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.run2 }}/DONE') != ''
+        with: { path: 'cache/${{ steps.plan.outputs.run2 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run2 }}' }
+      - uses: actions/cache/save@v4
+        if: always() && steps.r3.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.run3 }}/DONE') != ''
+        with: { path: 'cache/${{ steps.plan.outputs.run3 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run3 }}' }
+      - uses: actions/cache/save@v4
+        if: always() && steps.r4.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.run4 }}/DONE') != ''
+        with: { path: 'cache/${{ steps.plan.outputs.run4 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run4 }}' }
+      - uses: actions/cache/save@v4
+        if: always() && steps.r5.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.run5 }}/DONE') != ''
+        with: { path: 'cache/${{ steps.plan.outputs.run5 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run5 }}' }
       - name: Assemble site
         run: |
           mkdir -p _site
           cp -r index.html app.js style.css favicon.ico vendor data _site/
           touch _site/.nojekyll
+          du -sh _site
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
