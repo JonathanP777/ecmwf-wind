@@ -11,7 +11,8 @@
 <div id="map"></div>
 
 <div id="panel">
-  <div class="title">ECMWF IFS 10 m wind</div>
+  <div class="titlerow"><div class="title">ECMWF IFS 10 m wind</div>
+    <button id="settingsBtn" aria-expanded="false" aria-controls="settings" title="Settings">⚙ Settings ▾</button></div>
   <div id="runinfo">Loading…</div>
   <div id="validtime"></div>
   <div class="row">
@@ -24,13 +25,30 @@
     <label><input type="checkbox" id="tBarbs" checked> Barbs</label>
     <label><input type="checkbox" id="tShade" checked> Speed colours</label>
   </div>
+  <div id="settings" hidden>
+    <div class="srow"><label for="sUnits">Speed units</label>
+      <select id="sUnits">
+        <option value="kt">knots (kt)</option><option value="mph">mph</option>
+        <option value="kmh">km/h</option><option value="ms">m/s</option>
+      </select></div>
+    <div class="srow"><label for="sSpeed">Animation speed</label>
+      <input type="range" id="sSpeed" min="0.05" max="1.5" step="0.05"><output id="oSpeed"></output></div>
+    <div class="srow"><label for="sWidth">Line width</label>
+      <input type="range" id="sWidth" min="0.5" max="4" step="0.25"><output id="oWidth"></output></div>
+    <div class="srow"><label for="sTrail">Trail length</label>
+      <input type="range" id="sTrail" min="1" max="10" step="1"><output id="oTrail"></output></div>
+    <div class="srow"><label for="sDensity">Particle density</label>
+      <input type="range" id="sDensity" min="0.25" max="3" step="0.25"><output id="oDensity"></output></div>
+    <div class="srow"><span></span><button id="sReset">Reset to defaults</button></div>
+    <div class="snote">Saved on this device. Wind barbs always use knots.</div>
+  </div>
 </div>
 
 <div id="legend">
-  <div class="ltitle">Wind speed (knots)</div>
+  <div class="ltitle" id="legendTitle">Wind speed (knots)</div>
   <canvas id="legendBar" width="260" height="14"></canvas>
   <div id="legendTicks"></div>
-  <div class="ltitle" style="margin-top:8px">Barbs</div>
+  <div class="ltitle" style="margin-top:8px">Barbs <span class="lnote">(always in knots)</span></div>
   <canvas id="barbKey" width="260" height="46"></canvas>
 </div>
 

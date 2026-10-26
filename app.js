@@ -5,6 +5,25 @@ const MS2KT = 1.943844;
 let meta = null, field = null, stepIdx = 0;
 const cache = {};
 
+// ---------- user settings (saved in localStorage) ----------
+const DEFAULTS = { units: 'kt', speed: 0.4, width: 1.0, trail: 6, density: 1.0 };
+const UNITS = {
+  kt:  { f: 1.943844, label: 'kt',   name: 'knots', ticks: [0, 10, 20, 30, 40, 50, 60, 80, 100] },
+  mph: { f: 2.236936, label: 'mph',  name: 'mph',   ticks: [0, 20, 40, 60, 80, 100] },
+  kmh: { f: 3.6,      label: 'km/h', name: 'km/h',  ticks: [0, 20, 40, 60, 80, 100, 140, 180] },
+  ms:  { f: 1,        label: 'm/s',  name: 'm/s',   ticks: [0, 5, 10, 15, 20, 25, 30, 40, 50] }
+};
+const settings = Object.assign({}, DEFAULTS);
+try {
+  const saved = JSON.parse(localStorage.getItem('windSettings') || '{}');
+  for (const k in DEFAULTS) if (k in saved && typeof saved[k] === typeof DEFAULTS[k]) settings[k] = saved[k];
+  if (!UNITS[settings.units]) settings.units = DEFAULTS.units;
+} catch (e) {}
+function saveSettings() { try { localStorage.setItem('windSettings', JSON.stringify(settings)); } catch (e) {} }
+function fmtSpeed(ms) { const u = UNITS[settings.units]; const v = ms * u.f; return (settings.units === 'ms' ? v.toFixed(1) : v.toFixed(0)) + ' ' + u.label; }
+// trail length 1..10 -> per-frame fade (how much of the old trail survives each frame)
+function trailFade() { return 0.80 + settings.trail * 0.0185; }
+
 // ---------- map & basemap ----------
 const map = L.map('map', { center: [30, 0], zoom: 2, minZoom: 1, maxZoom: 12, worldCopyJump: true, preferCanvas: true });
 map.createPane('shade'); map.getPane('shade').style.zIndex = 350;
@@ -19,7 +38,7 @@ const dark = L.layerGroup([
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', { maxZoom: 16, pane: 'labels' })
 ]).addTo(map);
 const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | ' + dataAttrib, maxZoom: 19 });
-L.control.layers({ 'Dark (Esri)': dark, 'OpenStreetMap': osm }, null, { position: 'topright' }).addTo(map);
+L.control.layers({ 'Dark (Esri)': dark, 'OpenStreetMap': osm }, null, { position: window.innerWidth < 600 ? 'topleft' : 'topright' }).addTo(map);
 // coastlines + borders drawn above the colour shading so land/sea stay readable
 const coastRenderer = L.canvas({ pane: 'coast', padding: 0.3 });
 fetch('vendor/coast.geojson').then(r => r.json()).then(g => L.geoJSON(g, { renderer: coastRenderer, interactive: false, style: { color: '#e8e8e8', weight: 1, opacity: 0.75 } }).addTo(map));
@@ -182,11 +201,13 @@ function drawBarbs() {
 
 // ---------- particles ----------
 let parts = [], geom = null, animOn = false, moving = false;
-const PART_AGE = 90;
+let PART_AGE = 90;
+function partAge() { return Math.round(Math.min(400, 90 / Math.sqrt(Math.max(0.05, settings.speed)))); }
 function resetParticles() {
   fitCanvas(partCv, 1);
   geom = viewGeom();
-  const nP = Math.min(7000, Math.round(geom.w * geom.h / 500));
+  PART_AGE = partAge();
+  const nP = Math.round(Math.min(7000, geom.w * geom.h / 500) * settings.density);
   parts = [];
   for (let i = 0; i < nP; i++) parts.push(newParticle(Math.random() * PART_AGE | 0));
 }
@@ -194,11 +215,11 @@ function newParticle(age) { return { x: Math.random() * geom.w, y: Math.random()
 function stepParticles() {
   const ctx = partCv.getContext('2d');
   ctx.globalCompositeOperation = 'destination-in';
-  ctx.fillStyle = 'rgba(0,0,0,0.90)'; ctx.fillRect(0, 0, partCv.width, partCv.height);
+  ctx.fillStyle = 'rgba(0,0,0,' + trailFade().toFixed(4) + ')'; ctx.fillRect(0, 0, partCv.width, partCv.height);
   ctx.globalCompositeOperation = 'source-over';
   if (!field || !document.getElementById('tParticles').checked || moving) return;
-  const k = 0.11 * Math.pow(1.15, map.getZoom() - 2);   // pixels per frame per m/s
-  ctx.lineWidth = 1.0; ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  const k = settings.speed * 0.11 * Math.pow(1.15, map.getZoom() - 2);   // pixels per frame per m/s
+  ctx.lineWidth = settings.width; ctx.strokeStyle = 'rgba(255,255,255,0.7)';
   ctx.beginPath();
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
@@ -259,19 +280,29 @@ map.on('mousemove', e => {
   const ms = Math.hypot(p[0], p[1]), dir = (Math.atan2(-p[0], -p[1]) * 180 / Math.PI + 360) % 360;
   const compass = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'][Math.round(dir / 22.5) % 16];
   const lon = ((e.latlng.lng + 180) % 360 + 360) % 360 - 180;
-  tip.innerHTML = `<b>${(ms * MS2KT).toFixed(0)} kt</b> (${ms.toFixed(1)} m/s) from ${dir.toFixed(0)}° ${compass}<br>` +
+  const second = settings.units === 'ms' ? (ms * MS2KT).toFixed(0) + ' kt' : ms.toFixed(1) + ' m/s';
+  tip.innerHTML = `<b>${fmtSpeed(ms)}</b> (${second}) from ${dir.toFixed(0)}° ${compass}<br>` +
     `<span style="color:#aaa">${e.latlng.lat.toFixed(2)}°, ${lon.toFixed(2)}°</span>`;
   tip.style.display = 'block';
   tip.style.left = (e.containerPoint.x + 14) + 'px'; tip.style.top = (e.containerPoint.y + 14) + 'px';
 });
 map.on('mouseout', () => tip.style.display = 'none');
 
+// legend ticks: the colour scale runs 0..100 kt; label it in the chosen unit
+function drawLegendTicks() {
+  const u = UNITS[settings.units], ticks = document.getElementById('legendTicks');
+  ticks.innerHTML = '';
+  const maxVal = 100 / MS2KT * u.f;
+  u.ticks.filter(t => t <= maxVal + 1e-6).forEach(t => {
+    const s = document.createElement('span'); s.style.left = (t / maxVal * 260) + 'px'; s.textContent = t; ticks.appendChild(s);
+  });
+  document.getElementById('legendTitle').textContent = 'Wind speed (' + u.name + ')';
+}
 // legend
 (function legend() {
   const c = document.getElementById('legendBar'), ctx = c.getContext('2d');
   for (let x = 0; x < c.width; x++) { const k = Math.round(x / (c.width - 1) * 100); ctx.fillStyle = `rgb(${LUT[k*3]},${LUT[k*3+1]},${LUT[k*3+2]})`; ctx.fillRect(x, 0, 1, c.height); }
-  const ticks = document.getElementById('legendTicks');
-  [0, 10, 20, 30, 40, 50, 60, 80, 100].forEach(k => { const s = document.createElement('span'); s.style.left = (k / 100 * 260) + 'px'; s.textContent = k; ticks.appendChild(s); });
+  drawLegendTicks();
   const b = document.getElementById('barbKey'), bc = b.getContext('2d');
   bc.strokeStyle = bc.fillStyle = '#fff'; bc.lineWidth = 1.3; bc.font = '10px sans-serif'; bc.textAlign = 'center';
   [[5, 'half 5'], [10, 'full 10'], [25, '25'], [50, 'pennant 50'], [65, '65']].forEach(([kt, lab], i) => {
@@ -279,6 +310,40 @@ map.on('mouseout', () => tip.style.display = 'none');
     drawBarb(bc, x, 30, ms, 0, 45, 18); // westerly wind: staff points west
     bc.fillText(lab, x - 6, 44);
   });
+})();
+
+// ---------- settings panel ----------
+(function settingsUI() {
+  const btn = document.getElementById('settingsBtn'), box = document.getElementById('settings');
+  btn.onclick = () => { const open = box.hidden; box.hidden = !open; btn.setAttribute('aria-expanded', open); btn.textContent = open ? '⚙ Settings ▴' : '⚙ Settings ▾'; };
+  const els = { units: 'sUnits', speed: 'sSpeed', width: 'sWidth', trail: 'sTrail', density: 'sDensity' };
+  const out = {
+    speed: v => v.toFixed(2) + '×', width: v => v.toFixed(2) + ' px',
+    trail: v => String(v), density: v => v.toFixed(2) + '×'
+  };
+  function sync() {
+    for (const k in els) {
+      const el = document.getElementById(els[k]); el.value = settings[k];
+      if (out[k]) document.getElementById('o' + els[k].slice(1)).textContent = out[k](settings[k]);
+    }
+  }
+  function apply(k) {
+    if (k === 'units') { drawLegendTicks(); tip.style.display = 'none'; }
+    if (k === 'density' || k === 'speed') { if (meta) resetParticles(); }
+    if (k === 'width' || k === 'trail') { if (meta) partCv.getContext('2d').clearRect(0, 0, partCv.width, partCv.height); }
+  }
+  for (const k in els) {
+    const el = document.getElementById(els[k]);
+    el.addEventListener(k === 'units' ? 'change' : 'input', () => {
+      settings[k] = k === 'units' ? el.value : parseFloat(el.value);
+      sync(); saveSettings(); apply(k);
+    });
+  }
+  document.getElementById('sReset').onclick = () => {
+    Object.assign(settings, DEFAULTS); sync(); saveSettings();
+    drawLegendTicks(); if (meta) resetParticles();
+  };
+  sync();
 })();
 
 // ---------- start ----------
@@ -290,5 +355,5 @@ fetch('data/meta.json', { cache: 'no-cache' }).then(r => r.json()).then(m => {
   setStep(0);
   loop();
 });
-window._windDebug = { map, sample, get meta() { return meta; } };
+window._windDebug = { map, sample, settings, get meta() { return meta; } };
 })();
