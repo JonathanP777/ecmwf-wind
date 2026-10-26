@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ECMWF Wind Viewer</title>
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="map"></div>
+
+<div id="panel">
+  <div class="title">ECMWF IFS 10 m wind</div>
+  <div id="runinfo">Loading…</div>
+  <div id="validtime"></div>
+  <div class="row">
+    <button id="play" title="Play / pause">▶</button>
+    <input id="slider" type="range" min="0" max="0" value="0" step="1">
+    <span id="stepLabel">+0h</span>
+  </div>
+  <div class="row toggles">
+    <label><input type="checkbox" id="tParticles" checked> Particles</label>
+    <label><input type="checkbox" id="tBarbs" checked> Barbs</label>
+    <label><input type="checkbox" id="tShade" checked> Speed colours</label>
+  </div>
+</div>
+
+<div id="legend">
+  <div class="ltitle">Wind speed (knots)</div>
+  <canvas id="legendBar" width="260" height="14"></canvas>
+  <div id="legendTicks"></div>
+  <div class="ltitle" style="margin-top:8px">Barbs</div>
+  <canvas id="barbKey" width="260" height="46"></canvas>
+</div>
+
+<div id="tooltip"></div>
+<div id="loading">Loading forecast…</div>
+
+<script src="vendor/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

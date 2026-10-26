@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+# forecast data is generated fresh by the GitHub Actions workflow on every deploy
+data/
+*.grib
+*.grib2
+*.idx
+*.log
+screenshots/
+.DS_Store

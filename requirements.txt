@@ -1,0 +1,6 @@
+ecmwf-opendata
+eccodes
+cfgrib
+xarray
+numpy
+pillow

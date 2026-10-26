@@ -1,0 +1,55 @@
+name: Update forecast and deploy site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # ECMWF open data for each run (00/06/12/18 UTC) appears ~7-9 h later
+    - cron: '30 1,7,13,19 * * *'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install Python packages
+        run: pip install -r requirements.txt
+      - name: Check ecCodes
+        run: python -m eccodes selfcheck || python -c "import eccodes; print(eccodes.codes_get_api_version())"
+      - name: Download latest ECMWF forecast
+        run: |
+          for i in 1 2 3; do python update_data.py && break; echo "retrying in 60s"; sleep 60; done
+          test -f data/meta.json
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp -r index.html app.js style.css favicon.ico vendor data _site/
+          touch _site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
