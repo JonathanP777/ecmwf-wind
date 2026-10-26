@@ -10,7 +10,7 @@ meteorological wind barbs, wind-speed colours and a forecast-hour slider.
 |------|--------------|
 | `index.html`, `app.js`, `style.css` | The website itself (one page, no server code needed). |
 | `update_data.py` | Downloads the newest ECMWF forecast and turns it into small images in `data/`. |
-| `data/` | One PNG per forecast hour (`wind_000.png` … `wind_072.png`) + `meta.json` (model run time, list of hours). |
+| `data/` | One PNG per forecast step (`wind_000.png` … `wind_360.png`) + `meta.json` (model run time, list of steps, gust periods). Generated, not stored in git. |
 | `vendor/` | Leaflet map library + Natural Earth coastlines/borders, stored locally. |
 | `screenshot.py` | Opens the site in a hidden browser and saves pictures to `screenshots/`. |
 
@@ -46,6 +46,22 @@ python -m http.server 8765     # then open http://localhost:8765
 ECMWF runs the model 4 times a day (00, 06, 12, 18 UTC); open data appears
 roughly 7–9 hours after the run time. Re-running `update_data.py` always grabs
 the newest available run.
+
+## Forecast range and gusts
+
+`update_data.py` reads ECMWF's open-data index files directly and always uses the
+**newest run whose last forecast step has been published**:
+
+- **00 and 12 UTC runs:** 0–144 h every 3 h, then 150–360 h every 6 h (85 steps, 15 days).
+- **06 and 18 UTC runs:** 0–144 h every 3 h only (49 steps, 6 days). So for roughly
+  half of each day the slider ends at +144 h, and after the next 00/12 UTC run is
+  published it goes back out to +360 h.
+
+Each PNG stores east-west wind (red), north-south wind (green) and **10 m wind
+gust** (blue). Gust is the ECMWF maximum gust over the period before each step:
+`10fg` max over the previous 1 h for +3…+90 h, `10fg3` max over the previous 3 h for
++93…+144 h, and `10fg` max over the previous 6 h for +150…+360 h. There is no gust
+at +0 h. The site shows the period next to the "Colours" picker and in the hover readout.
 
 ## Live website
 

@@ -3,10 +3,11 @@
 'use strict';
 const MS2KT = 1.943844;
 let meta = null, field = null, stepIdx = 0;
-const cache = {};
+const cache = new Map();   // step index -> decoded field (small LRU so long scrubbing doesn't eat memory)
+const CACHE_MAX = 10;
 
 // ---------- user settings (saved in localStorage) ----------
-const DEFAULTS = { units: 'kt', speed: 0.4, width: 1.0, trail: 6, density: 1.0 };
+const DEFAULTS = { units: 'kt', shade: 'speed', speed: 0.4, width: 1.0, trail: 6, density: 1.0 };
 const UNITS = {
   kt:  { f: 1.943844, label: 'kt',   name: 'knots', ticks: [0, 10, 20, 30, 40, 50, 60, 80, 100] },
   mph: { f: 2.236936, label: 'mph',  name: 'mph',   ticks: [0, 20, 40, 60, 80, 100] },
@@ -18,6 +19,7 @@ try {
   const saved = JSON.parse(localStorage.getItem('windSettings') || '{}');
   for (const k in DEFAULTS) if (k in saved && typeof saved[k] === typeof DEFAULTS[k]) settings[k] = saved[k];
   if (!UNITS[settings.units]) settings.units = DEFAULTS.units;
+  if (!['speed', 'gust', 'off'].includes(settings.shade)) settings.shade = DEFAULTS.shade;
 } catch (e) {}
 function saveSettings() { try { localStorage.setItem('windSettings', JSON.stringify(settings)); } catch (e) {} }
 function fmtSpeed(ms) { const u = UNITS[settings.units]; const v = ms * u.f; return (settings.units === 'ms' ? v.toFixed(1) : v.toFixed(0)) + ' ' + u.label; }
@@ -66,14 +68,23 @@ function decode(img, st) {
   const n = img.width * img.height, u = new Float32Array(n), v = new Float32Array(n);
   const ur = (st.uMax - st.uMin) / 255, vr = (st.vMax - st.vMin) / 255;
   for (let i = 0; i < n; i++) { u[i] = st.uMin + px[i * 4] * ur; v[i] = st.vMin + px[i * 4 + 1] * vr; }
-  return { u, v, w: img.width, h: img.height };
+  let g = null;
+  if (st.gMax !== undefined) {   // gust in the blue channel (not defined at +0h)
+    g = new Float32Array(n); const gr = (st.gMax - st.gMin) / 255;
+    for (let i = 0; i < n; i++) g[i] = st.gMin + px[i * 4 + 2] * gr;
+  }
+  return { u, v, g, w: img.width, h: img.height };
 }
 function loadStep(i) {
-  if (cache[i]) return Promise.resolve(cache[i]);
+  if (cache.has(i)) { const f = cache.get(i); cache.delete(i); cache.set(i, f); return Promise.resolve(f); }
   const st = meta.steps[i];
   return new Promise((res, rej) => {
     const img = new Image();
-    img.onload = () => { cache[i] = decode(img, st); res(cache[i]); };
+    img.onload = () => {
+      const f = decode(img, st); cache.set(i, f);
+      while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+      res(f);
+    };
     img.onerror = rej;
     img.src = 'data/' + st.file + '?r=' + encodeURIComponent(meta.run);
   });
@@ -89,6 +100,15 @@ function sample(lat, lon) {
   const a = (1 - fx) * (1 - fy), b = fx * (1 - fy), c = (1 - fx) * fy, d = fx * fy;
   return [field.u[i00] * a + field.u[i10] * b + field.u[i01] * c + field.u[i11] * d,
           field.v[i00] * a + field.v[i10] * b + field.v[i01] * c + field.v[i11] * d];
+}
+// bilinear gust (m/s) or null when the step has no gust (+0h)
+function sampleGust(lat, lon) {
+  if (!field || !field.g || lat > 90 || lat < -90) return null;
+  lon = ((lon + 180) % 360 + 360) % 360 - 180;
+  const x = (lon - meta.lon0) / meta.dlon, y = (meta.lat0 - lat) / meta.dlat;
+  const x0 = Math.floor(x), y0 = Math.min(Math.floor(y), field.h - 2), fx = x - x0, fy = y - y0;
+  const x1 = (x0 + 1) % field.w, W = field.w, G = field.g;
+  return G[y0 * W + x0] * (1 - fx) * (1 - fy) + G[y0 * W + x1] * fx * (1 - fy) + G[(y0 + 1) * W + x0] * (1 - fx) * fy + G[(y0 + 1) * W + x1] * fx * fy;
 }
 // screen geometry helpers: in Web Mercator, lon is linear in x and lat depends only on y
 function viewGeom() {
@@ -113,16 +133,19 @@ for (let k = 0; k <= 100; k++) {
 function drawShade() {
   fitCanvas(shadeCv, 1);
   const ctx = shadeCv.getContext('2d'); ctx.clearRect(0, 0, shadeCv.width, shadeCv.height);
-  if (!field || !document.getElementById('tShade').checked) return;
+  const mode = settings.shade;
+  if (!field || mode === 'off' || (mode === 'gust' && !field.g)) return;
   const g = viewGeom(), R = 3, sw = Math.ceil(g.w / R), sh = Math.ceil(g.h / R);
   const off = document.createElement('canvas'); off.width = sw; off.height = sh;
   const octx = off.getContext('2d'), im = octx.createImageData(sw, sh), d = im.data;
   for (let j = 0; j < sh; j++) {
     const lat = g.rowLat[Math.min(g.h, j * R + 1)];
     for (let i = 0; i < sw; i++) {
-      const p = sample(lat, g.lonL + (i * R + 1) * g.dLon), o = (j * sw + i) * 4;
-      if (!p) continue;
-      const k = Math.min(100, Math.round(Math.hypot(p[0], p[1]) * MS2KT));
+      const lon = g.lonL + (i * R + 1) * g.dLon, o = (j * sw + i) * 4;
+      let ms;
+      if (mode === 'gust') { ms = sampleGust(lat, lon); if (ms === null) continue; }
+      else { const p = sample(lat, lon); if (!p) continue; ms = Math.hypot(p[0], p[1]); }
+      const k = Math.min(100, Math.round(ms * MS2KT));
       d[o] = LUT[k * 3]; d[o + 1] = LUT[k * 3 + 1]; d[o + 2] = LUT[k * 3 + 2]; d[o + 3] = 150;
     }
   }
@@ -244,13 +267,14 @@ async function setStep(i) {
   stepIdx = i;
   const st = meta.steps[i];
   document.getElementById('stepLabel').textContent = '+' + st.hour + 'h';
+  document.getElementById('stepLabel').title = 'Day ' + (st.hour / 24).toFixed(1);
   document.getElementById('validtime').textContent = 'Valid ' + fmtTime(st.valid);
   const ld = document.getElementById('loading');
   const t = setTimeout(() => ld.style.display = 'block', 150);
   field = await loadStep(i);
   clearTimeout(t); ld.style.display = 'none';
   if (i !== stepIdx) return;
-  redrawStatic();
+  redrawStatic(); updateShadeNote();
   // prefetch next step
   if (i + 1 < meta.steps.length) loadStep(i + 1);
 }
@@ -264,7 +288,13 @@ document.getElementById('play').onclick = function () {
   }, 1200);
 };
 document.getElementById('slider').oninput = e => setStep(+e.target.value);
-document.getElementById('tShade').onchange = drawShade;
+function updateShadeNote() {
+  const n = document.getElementById('shadeNote'), st = meta && meta.steps[stepIdx];
+  if (settings.shade !== 'gust' || !st) { n.textContent = ''; return; }
+  n.textContent = st.gustPeriod ? 'max in previous ' + st.gustPeriod + ' h' : 'no gust at +0h (starts +3h)';
+}
+document.getElementById('shadeSel').value = settings.shade;
+document.getElementById('shadeSel').onchange = e => { settings.shade = e.target.value; saveSettings(); drawShade(); drawLegendTicks(); updateShadeNote(); };
 document.getElementById('tBarbs').onchange = drawBarbs;
 document.getElementById('tParticles').onchange = () => { const c = partCv.getContext('2d'); c.clearRect(0, 0, partCv.width, partCv.height); };
 
@@ -281,7 +311,9 @@ map.on('mousemove', e => {
   const compass = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'][Math.round(dir / 22.5) % 16];
   const lon = ((e.latlng.lng + 180) % 360 + 360) % 360 - 180;
   const second = settings.units === 'ms' ? (ms * MS2KT).toFixed(0) + ' kt' : ms.toFixed(1) + ' m/s';
-  tip.innerHTML = `<b>${fmtSpeed(ms)}</b> (${second}) from ${dir.toFixed(0)}° ${compass}<br>` +
+  const gs = sampleGust(e.latlng.lat, e.latlng.lng), st = meta.steps[stepIdx];
+  const gustTxt = gs === null ? 'Gust: n/a at +0h' : `Gust: <b>${fmtSpeed(gs)}</b> <span style="color:#aaa">(max, previous ${st.gustPeriod} h)</span>`;
+  tip.innerHTML = `Wind <b>${fmtSpeed(ms)}</b> (${second}) from ${dir.toFixed(0)}° ${compass}<br>${gustTxt}<br>` +
     `<span style="color:#aaa">${e.latlng.lat.toFixed(2)}°, ${lon.toFixed(2)}°</span>`;
   tip.style.display = 'block';
   tip.style.left = (e.containerPoint.x + 14) + 'px'; tip.style.top = (e.containerPoint.y + 14) + 'px';
@@ -296,7 +328,7 @@ function drawLegendTicks() {
   u.ticks.filter(t => t <= maxVal + 1e-6).forEach(t => {
     const s = document.createElement('span'); s.style.left = (t / maxVal * 260) + 'px'; s.textContent = t; ticks.appendChild(s);
   });
-  document.getElementById('legendTitle').textContent = 'Wind speed (' + u.name + ')';
+  document.getElementById('legendTitle').textContent = (settings.shade === 'gust' ? 'Wind gust' : 'Wind speed') + ' (' + u.name + ')';
 }
 // legend
 (function legend() {
@@ -341,6 +373,7 @@ function drawLegendTicks() {
   }
   document.getElementById('sReset').onclick = () => {
     Object.assign(settings, DEFAULTS); sync(); saveSettings();
+    document.getElementById('shadeSel').value = settings.shade; drawShade(); updateShadeNote();
     drawLegendTicks(); if (meta) resetParticles();
   };
   sync();
@@ -355,5 +388,5 @@ fetch('data/meta.json', { cache: 'no-cache' }).then(r => r.json()).then(m => {
   setStep(0);
   loop();
 });
-window._windDebug = { map, sample, settings, get meta() { return meta; } };
+window._windDebug = { map, sample, sampleGust, settings, get stepIdx() { return stepIdx; }, get field() { return field; }, get meta() { return meta; } };
 })();

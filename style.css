@@ -9,6 +9,8 @@ html,body{margin:0;height:100%;background:#111;font-family:system-ui,-apple-syst
 #slider{flex:1}
 #play{background:#2c3e50;color:#fff;border:0;border-radius:4px;width:32px;height:26px;cursor:pointer}
 #stepLabel{min-width:42px;text-align:right;font-variant-numeric:tabular-nums}
+#shadeSel{background:#2c3e50;color:#fff;border:0;border-radius:4px;padding:3px 4px;font-size:12px}
+#shadeNote{color:#ffd166;font-size:11px}
 .toggles label{cursor:pointer;user-select:none;margin-right:6px}
 #legend{position:absolute;bottom:24px;right:10px;z-index:1000;background:rgba(20,22,28,.88);padding:8px 10px;border-radius:8px;font-size:11px}
 #legend .ltitle{font-weight:600;margin-bottom:4px}

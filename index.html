@@ -23,8 +23,10 @@
   <div class="row toggles">
     <label><input type="checkbox" id="tParticles" checked> Particles</label>
     <label><input type="checkbox" id="tBarbs" checked> Barbs</label>
-    <label><input type="checkbox" id="tShade" checked> Speed colours</label>
   </div>
+  <div class="row"><label for="shadeSel">Colours</label>
+    <select id="shadeSel"><option value="speed">Wind speed</option><option value="gust">Wind gust</option><option value="off">Off</option></select>
+    <span id="shadeNote"></span></div>
   <div id="settings" hidden>
     <div class="srow"><label for="sUnits">Speed units</label>
       <select id="sUnits">
