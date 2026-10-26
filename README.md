@@ -103,3 +103,17 @@ committed to git.
 - Only 10 m wind for now; temperature, pressure, gusts, etc. can be added the same way.
 - Particles pause while you drag/zoom and restart when you stop.
 - Coastline lines don't repeat when you scroll past the date line onto a second copy of the world.
+
+## Drawing tools
+
+Open **Additional Map Settings → Drawing tools** (bottom left). You can use:
+- a freehand pen
+- lines and arrows
+- rectangles, circles and polygons
+- text labels
+- cold, warm, stationary and occluded fronts, and troughs (front symbols sit on the left of the direction you draw; **Flip** swaps the side)
+- H and L markers.
+
+**Select** lets you move or edit a drawing. Press **Esc**, or click the active tool again, to go back to panning the map.
+
+Drawings are saved in your browser. You can export them as a GeoJSON file and import them again. **Save image (PNG)** downloads the current view with a caption showing the model run, valid time and layer. Drawing uses [Leaflet-Geoman](https://github.com/geoman-io/leaflet-geoman) (MIT), stored locally in `vendor/`.

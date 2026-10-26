@@ -77,7 +77,7 @@ jobs:
       - name: Assemble site
         run: |
           mkdir -p _site
-          cp -r index.html app.js style.css favicon.ico vendor data _site/
+          cp -r index.html app.js draw.js style.css favicon.ico vendor data _site/
           touch _site/.nojekyll
           du -sh _site
       - uses: actions/configure-pages@v5

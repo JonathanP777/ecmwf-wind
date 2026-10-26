@@ -6,6 +6,7 @@
 <link rel="icon" href="favicon.ico">
   <title>ECMWF Forecast Viewer</title>
 <link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="vendor/leaflet-geoman.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -90,15 +91,56 @@
         <label><input type="radio" name="hStyle" id="hDetailed" value="detailed"> Detailed <span class="lnote">(extra units, gust/precip period)</span></label>
       </div>
     </div>
+    <div class="amsHead amsDrawHead">Drawing</div>
+    <button id="openDraw" class="amsBig">✎ Drawing tools…</button>
     <div class="amsFoot"><button id="hReset">Reset these</button><span class="lnote">Saved on this device</span></div>
   </div>
   <button id="amsBtn" aria-expanded="false" aria-controls="amsBody">Additional Map Settings <span id="amsArrow">▴</span></button>
+</div>
+
+<div id="drawBar" hidden>
+  <div class="dbHead"><b>Drawing tools</b><span id="dCount" class="lnote"></span><button id="dbClose" title="Close drawing tools">✕</button></div>
+  <div class="dbTools">
+    <button class="dt" data-t="select" aria-label="select"><svg viewBox="0 0 16 16" width="16" height="16"><path d="M3 1l9 6.5-4 .8 2.4 4.6-1.6.8L6.4 9 3 12z" fill="#eee"/></svg></button>
+    <button class="dt" data-t="pen" aria-label="pen">✎</button>
+    <button class="dt" data-t="line" aria-label="line"><svg viewBox="0 0 24 16" width="24" height="16"><path d="M3 13L21 3" stroke="#eee" stroke-width="2"/></svg></button>
+    <button class="dt" data-t="arrow" aria-label="arrow"><svg viewBox="0 0 24 16" width="24" height="16"><path d="M2 8H18" stroke="#eee" stroke-width="2"/><path d="M22 8l-6-4v8z" fill="#eee"/></svg></button>
+    <button class="dt" data-t="rect" aria-label="rect"><svg viewBox="0 0 24 16" width="24" height="16"><rect x="4" y="2.5" width="16" height="11" fill="none" stroke="#eee" stroke-width="1.8"/></svg></button>
+    <button class="dt" data-t="circle" aria-label="circle"><svg viewBox="0 0 24 16" width="24" height="16"><circle cx="12" cy="8" r="6" fill="none" stroke="#eee" stroke-width="1.8"/></svg></button>
+    <button class="dt" data-t="polygon" aria-label="polygon"><svg viewBox="0 0 24 16" width="24" height="16"><path d="M5 13l-2-7 8-4.5 9 4-3 7.5z" fill="none" stroke="#eee" stroke-width="1.8"/></svg></button>
+    <button class="dt" data-t="text" aria-label="text"><b style="font-family:Georgia,serif;font-size:15px">T</b></button>
+    <button class="dt" data-t="cold" aria-label="cold"><svg viewBox="0 0 24 16" width="24" height="16"><path d="M1 12H23" stroke="#3d7bff" stroke-width="2"/><path d="M3 12l3.5-7 3.5 7zM14 12l3.5-7 3.5 7z" fill="#3d7bff"/></svg></button>
+    <button class="dt" data-t="warm" aria-label="warm"><svg viewBox="0 0 24 16" width="24" height="16"><path d="M1 12H23" stroke="#ff4040" stroke-width="2"/><path d="M3 12a3.5 3.5 0 0 1 7 0zM14 12a3.5 3.5 0 0 1 7 0z" fill="#ff4040"/></svg></button>
+    <button class="dt" data-t="stat" aria-label="stat"><svg viewBox="0 0 24 16" width="24" height="16"><path d="M1 8H12" stroke="#3d7bff" stroke-width="2"/><path d="M12 8H23" stroke="#ff4040" stroke-width="2"/><path d="M3 8l3.5-6.5 3.5 6.5z" fill="#3d7bff"/><path d="M14 8a3.5 3.5 0 0 0 7 0z" fill="#ff4040"/></svg></button>
+    <button class="dt" data-t="occl" aria-label="occl"><svg viewBox="0 0 24 16" width="24" height="16"><path d="M1 12H23" stroke="#b65cff" stroke-width="2"/><path d="M3 12l3.5-7 3.5 7zM14 12a3.5 3.5 0 0 1 7 0z" fill="#b65cff"/></svg></button>
+    <button class="dt" data-t="trough" aria-label="trough"><svg viewBox="0 0 24 16" width="24" height="16"><path d="M1 8H23" stroke="#ffa53b" stroke-width="2.4" stroke-dasharray="5 3"/></svg></button>
+    <button class="dt" data-t="H" aria-label="H"><b style="color:#3d8bff;font-size:15px">H</b></button>
+    <button class="dt" data-t="L" aria-label="L"><b style="color:#ff4d4d;font-size:15px">L</b></button>
+  </div>
+  <div class="dbOpts">
+    <label title="Colour (fronts use standard colours)"><input type="color" id="dColor"></label>
+    <label class="dbW">Width <input type="range" id="dWidth" min="1" max="8" step="0.5"><output id="oWidthD"></output></label>
+    <label title="Fill shapes"><input type="checkbox" id="dFill"> Fill</label>
+    <input type="range" id="dOpac" min="0.05" max="1" step="0.05" title="Fill opacity">
+    <button id="dFlip" title="Flip front symbols to the other side">⇅ Flip</button>
+  </div>
+  <div class="dbActs">
+    <button id="dUndo" title="Undo (Ctrl+Z)">↶ Undo</button><button id="dRedo" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+    <button id="dDel" title="Delete the selected drawing (Del)">🗑 Delete</button><button id="dFinish" hidden>✓ Finish</button>
+    <button id="dVis" title="Show or hide all drawings">👁 Hide</button><button id="dClear" title="Delete all drawings">Clear all</button>
+    <button id="dExport" title="Download drawings as GeoJSON">⤓ GeoJSON</button><button id="dImport" title="Load drawings from a GeoJSON file">⤒ Import</button>
+    <button id="dPng" class="dbPrimary" title="Save the current map view with drawings as a PNG image">📷 Save image (PNG)</button>
+  </div>
+  <div id="dbHint"></div>
+  <input type="file" id="dFile" accept=".geojson,.json,application/geo+json,application/json" hidden>
 </div>
 
 <div id="tooltip"></div>
 <div id="loading">Loading forecast…</div>
 
 <script src="vendor/leaflet.js"></script>
+<script src="vendor/leaflet-geoman.min.js"></script>
 <script src="app.js"></script>
+<script src="draw.js"></script>
 </body>
 </html>

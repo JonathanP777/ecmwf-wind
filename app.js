@@ -53,10 +53,10 @@ map.createPane('coast'); map.getPane('coast').style.zIndex = 400; map.getPane('c
 const dataAttrib = 'Wind data: <a href="https://www.ecmwf.int/en/forecasts/datasets/open-data">ECMWF open data</a> (CC BY 4.0) | Coastlines: Natural Earth';
 const esriAttrib = 'Basemap &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors';
 const dark = L.layerGroup([
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', { attribution: esriAttrib + ' | ' + dataAttrib, maxZoom: 16 }),
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', { maxZoom: 16, pane: 'labels' })
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', { attribution: esriAttrib + ' | ' + dataAttrib, maxZoom: 16, crossOrigin: 'anonymous' }),
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', { maxZoom: 16, pane: 'labels', crossOrigin: 'anonymous' })
 ]).addTo(map);
-const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | ' + dataAttrib, maxZoom: 19 });
+const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | ' + dataAttrib, maxZoom: 19, crossOrigin: 'anonymous' });
 L.control.layers({ 'Dark (Esri)': dark, 'OpenStreetMap': osm }, null, { position: window.innerWidth < 600 ? 'topleft' : 'topright' }).addTo(map);
 // coastlines + borders drawn above the colour shading so land/sea stay readable
 const coastRenderer = L.canvas({ pane: 'coast', padding: 0.3 });
@@ -676,6 +676,7 @@ fetch('data/index.json', { cache: 'no-cache' }).then(r => r.json()).then(async i
   await openRun(ix.runs[0].id, null);
   loop();
 });
+window._app = { map, settings, osm };   // shared with draw.js
 window._windDebug = { map, sample, sampleGust, sampleTemp, samplePres, samplePcp, settings, openRun,
   get stepIdx() { return stepIdx; }, get field() { return field; }, get meta() { return meta; }, get index() { return INDEX; } };
 })();
