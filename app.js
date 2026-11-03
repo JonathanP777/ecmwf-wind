@@ -4,7 +4,7 @@
 const MS2KT = 1.943844;
 let INDEX = null, meta = null, field = null, stepIdx = 0;
 // ---------- models ----------
-// What each model offers comes from data/index.json ("models": gust yes/no, precip periods, runs, data path).
+// What each model offers comes from index.json ("models": gust yes/no, precip periods, runs, data path).
 // MODEL_INFO only adds wording for the menus. To add a model: add it in update_data.py MODELS (+ a line here).
 const MODEL_INFO = {
   ifs:  { short: 'IFS',  label: 'ECMWF IFS (physics model)', title: 'ECMWF IFS forecast', stepTxt: '3-hourly' },
@@ -87,11 +87,16 @@ function fitCanvas(c, ratio) {
 // Each forecast step = PNG images whose colour channels hold 8-bit scaled values:
 //   wind_XXX.png: R=u, G=v, B=gust   met_XXX.png: R=2 m temp, G=MSL pressure, B=precip since run start
 //   pcp_XXX.png:  R/G/B = precip in previous 3 h / 6 h / 24 h  (loaded only when the precip layer is on)
-function runBase() { return MODEL.path + meta.id + '/'; }
+// Forecast data lives in a Cloudflare R2 bucket (DATA_BASE is set in config.js; 'data/' = served with the site).
+// Paths in index.json are relative to that root; each run entry has its folder in "dir".
+const DATA_BASE = window.DATA_BASE || 'data/';
+function modelBase(m) { m = m || MODEL; return /^(https?:|data\/)/.test(m.path) ? m.path : DATA_BASE + m.path; }
+function runDir(id) { const r = MODEL.runs.find(x => x.id === id); return (r && r.dir) || id; }
+function runBase() { return modelBase() + runDir(meta.id) + '/'; }
 function bust() { return '?v=' + encodeURIComponent(meta.generated + meta.res); }
 function loadImg(src) {
   return new Promise((res, rej) => {
-    const img = new Image();
+    const img = new Image(); img.crossOrigin = 'anonymous';   // data host sends CORS headers (needed to read pixels)
     img.onload = () => {
       const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
       const ctx = c.getContext('2d', { willReadFrequently: true }); ctx.drawImage(img, 0, 0);
@@ -676,7 +681,7 @@ function drawLegend() {
 // ---------- models & runs ----------
 async function openRun(id, keepValid) {
   const entry = MODEL.runs.find(r => r.id === id);
-  const m = await fetch(MODEL.path + id + '/meta.json', { cache: 'no-cache' }).then(r => r.json());
+  const m = await fetch(modelBase() + runDir(id) + '/meta.json', { cache: 'no-cache' }).then(r => r.json());
   meta = m; field = null;
   const latest = MODEL.runs[0].id === id;
   $('runinfo').textContent = 'Model run ' + fmtTime(m.run) + (latest ? ' (latest)' : '') + ' · ' + m.res + '° grid';
@@ -726,9 +731,9 @@ async function setModel(key, keepValid) {
 $('modelSel').onchange = e => setModel(e.target.value, meta ? meta.steps[stepIdx].valid : null);
 
 // ---------- start ----------
-fetch('data/index.json', { cache: 'no-cache' }).then(r => r.json()).then(async ix => {
+fetch(DATA_BASE + 'index.json', { cache: 'no-cache' }).then(r => r.json()).then(async ix => {
   // older index.json (IFS only) had just "runs"
-  if (!ix.models) ix.models = [{ key: 'ifs', name: 'ECMWF IFS', path: 'data/runs/', gust: true, pcp: ['3', '6', '24', 'total'], runs: ix.runs }];
+  if (!ix.models) ix.models = [{ key: 'ifs', name: 'ECMWF IFS', path: 'runs/', gust: true, pcp: ['3', '6', '24', 'total'], runs: ix.runs }];
   ix.models = ix.models.filter(m => m.runs && m.runs.length);
   INDEX = ix;
   const ms = $('modelSel');

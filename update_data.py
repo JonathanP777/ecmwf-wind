@@ -8,10 +8,10 @@ Usage:
 
 Models (see MODELS below; add a new entry there to add a model):
   ifs   ECMWF IFS (physics model), 5 newest runs: newest at 0.25deg, older 4 at 0.5deg.
-        Site data: data/runs/<run id>/   (unchanged from before AIFS was added)
+        Data: runs/<run id>/<0p25|0p50>/
   aifs  ECMWF AIFS Single (machine-learning model), 2 newest runs: newest 0.25deg, other 0.5deg.
         Every run (00/06/12/18 UTC) goes 0-360 h every 6 h (61 steps). No gust parameter.
-        tp is in kg m-2 (= mm), accumulated from the run start. Site data: data/aifs/runs/<run id>/
+        tp is in kg m-2 (= mm), accumulated from the run start. Data: aifs/runs/<run id>/<0p25|0p50>/
 
 What ECMWF IFS open data offers (checked Oct 2026 against data.ecmwf.int index files):
   * 00/12 UTC runs: 0-144 h every 3 h, then 150-360 h every 6 h (85 steps).
@@ -259,8 +259,11 @@ def assemble(plans):
         cfg = MODELS[model]; idx = []
         for run in runs:
             if not is_built(run, model): print(f"warning: {model} run {run_id(run)} not built, skipped"); continue
-            rid = run_id(run); src = cache_dir(run, model); dst = os.path.join(tmp, cfg["site"], rid)
+            rid = run_id(run); src = cache_dir(run, model)
             res = "full" if not idx else "half"          # newest available run at full resolution
+            # each resolution gets its own folder, so a published folder never changes (safe incremental upload)
+            rdir = f"{rid}/{'0p25' if res == 'full' else '0p50'}"
+            dst = os.path.join(tmp, cfg["site"], rdir)
             shutil.copytree(os.path.join(src, res), dst)
             shutil.copytree(os.path.join(src, "isobars"), dst, dirs_exist_ok=True)
             info = json.load(open(os.path.join(src, "steps.json")))
@@ -269,14 +272,15 @@ def assemble(plans):
                     "width": 1440 // f, "height": 721 if f == 1 else 361, "lon0": -180.0, "lat0": 90.0,
                     "dlon": 0.25 * f, "dlat": 0.25 * f, "steps": info["steps"], "generated": gen}
             json.dump(meta, open(os.path.join(dst, "meta.json"), "w"), separators=(",", ":"))
-            idx.append({"id": rid, "run": info["run"], "res": meta["res"], "nSteps": len(info["steps"]),
+            idx.append({"id": rid, "dir": rdir, "run": info["run"], "res": meta["res"], "nSteps": len(info["steps"]),
                         "maxHour": info["steps"][-1]["hour"]})
         if model == "ifs" and not idx: raise SystemExit("no IFS run built")
-        models.append({"key": model, "name": cfg["name"], "path": f"data/{cfg['site']}/",
+        models.append({"key": model, "name": cfg["name"], "path": f"{cfg['site']}/",
                        "gust": cfg["gust"], "pcp": cfg["pcp"], "runs": idx})
     ifs = next(m for m in models if m["key"] == "ifs")
     # "runs" (top level) = IFS runs, same as before AIFS was added; "models" lists every model
-    json.dump({"generated": gen, "runs": ifs["runs"], "models": models},
+    # paths are relative to the data root (Cloudflare R2 bucket, or data/ on GitHub Pages)
+    json.dump({"generated": gen, "layout": 2, "runs": ifs["runs"], "models": models},
               open(os.path.join(tmp, "index.json"), "w"), indent=1)
     shutil.rmtree(DATA, ignore_errors=True); os.rename(tmp, DATA)
     size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(DATA) for f in fs)

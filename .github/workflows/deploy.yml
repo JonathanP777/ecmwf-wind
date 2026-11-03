@@ -88,10 +88,34 @@ jobs:
       - uses: actions/cache/save@v4
         if: always() && steps.a2.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.aifs2 }}/DONE') != ''
         with: { path: 'cache/${{ steps.plan.outputs.aifs2 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.aifs2 }}' }
+      # Forecast data lives in Cloudflare R2 (bucket ecmwf-wind-data), not in the Pages site.
+      # r2_sync.py uploads only new/changed files, deletes runs that rolled off, and uploads
+      # index.json last so visitors never see a half-uploaded run. If the R2 secrets are not
+      # set yet, the data is published with the Pages site instead (old behaviour).
+      - name: Upload data to Cloudflare R2
+        id: upload
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: 109b9e12fb8a09f6c53ab91bd3a5281e
+          R2_BUCKET: ecmwf-wind-data
+        run: |
+          if [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ]; then
+            echo "::warning::R2 secrets not set - publishing data with the Pages site instead"
+            echo "mode=pages" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pip install boto3
+          python r2_sync.py data
+          echo "mode=r2" >> "$GITHUB_OUTPUT"
       - name: Assemble site
         run: |
           mkdir -p _site
-          cp -r index.html app.js draw.js style.css favicon.ico vendor data _site/
+          cp -r index.html config.js app.js draw.js style.css favicon.ico vendor _site/
+          if [ "${{ steps.upload.outputs.mode }}" != "r2" ]; then
+            cp -r data _site/
+            echo "window.DATA_BASE = 'data/';" > _site/config.js
+          fi
           touch _site/.nojekyll
           du -sh _site
       - uses: actions/configure-pages@v5

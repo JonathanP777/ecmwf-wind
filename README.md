@@ -10,7 +10,9 @@ meteorological wind barbs, wind-speed colours and a forecast-hour slider.
 |------|--------------|
 | `index.html`, `app.js`, `style.css` | The website itself (one page, no server code needed). |
 | `update_data.py` | Downloads the newest ECMWF forecast and turns it into small images in `data/`. |
-| `data/` | `index.json` (list of runs) + `runs/<run>/` with images per forecast step and `meta.json`. Generated, not stored in git. |
+| `data/` | `index.json` (list of runs) + run folders with images per forecast step and `meta.json`. Generated, not stored in git; uploaded to Cloudflare R2. |
+| `config.js` | `window.DATA_BASE`: where the site loads forecast data from (the R2 public URL). |
+| `r2_sync.py` | Uploads `data/` to the Cloudflare R2 bucket (only changed files, old runs deleted, `index.json` last). |
 | `vendor/` | Leaflet map library + Natural Earth coastlines/borders, stored locally. |
 | `screenshot.py` | Opens the site in a hidden browser and saves pictures to `screenshots/`. |
 
@@ -86,9 +88,21 @@ Hosted free on GitHub Pages: https://jonathanp777.github.io/ecmwf-wind/
 
 The workflow in `.github/workflows/deploy.yml` runs every 6 hours (01:30, 07:30,
 13:30, 19:30 UTC), on every push to `main`, and on demand (Actions tab ->
-"Run workflow"). It runs `update_data.py` to download the newest ECMWF run and
-publishes the site with the fresh `data/` folder. Forecast data is never
-committed to git.
+"Run workflow"). It runs `update_data.py` to download the newest ECMWF run,
+uploads the data to Cloudflare R2 with `r2_sync.py`, and publishes the site
+(code only) on GitHub Pages. Forecast data is never committed to git.
+
+### Forecast data on Cloudflare R2
+
+- Bucket `ecmwf-wind-data`, public URL https://pub-797c80c27d0f42d6ad578c6ed6044be2.r2.dev/
+  (so the index is at `…r2.dev/index.json`). CORS allows GET from jonathanp777.github.io and localhost.
+- The workflow needs two repository secrets: `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`
+  (an R2 API token with Object Read & Write on that bucket only). If they are missing, the
+  workflow falls back to publishing `data/` inside the Pages site (with a warning).
+- Run folders never change after upload (a run that drops to 0.5° gets a new folder), so each
+  refresh only uploads new files. Folders from the previous index are kept for one more refresh
+  so visitors with the page open don't break, then deleted.
+- To use another host (e.g. a custom domain on the bucket), change `DATA_BASE` in `config.js`.
 
 ## Credits / licences
 
@@ -127,9 +141,8 @@ Use the **Model** menu to switch between:
 Each model's menus only offer what that model has. When you switch models, the map tries to stay on the same valid time. The site also remembers the last model you picked. A link with `?model=aifs` opens the AIFS model directly.
 
 Data layout (made by `update_data.py`):
-- `data/index.json` keeps `generated` and `runs` (the IFS runs), the same as before. It also adds `models`, with one entry per model: `key`, `name`, `path`, `gust`, `pcp` and `runs`.
-- IFS run folders are `data/runs/<run id>/` (unchanged).
-- AIFS run folders are `data/aifs/runs/<run id>/`.
+- `index.json` (`"layout": 2`) keeps `generated` and `runs` (the IFS runs). It also has `models`, with one entry per model: `key`, `name`, `path` (relative: `runs/` or `aifs/runs/`), `gust`, `pcp` and `runs`.
+- Every run entry has a `dir`, `<run id>/0p25` or `<run id>/0p50`. A run's files are at `DATA_BASE + path + dir + '/'`, e.g. `runs/2026102612/0p25/meta.json` or `aifs/runs/2026110218/0p25/meta.json`.
 - In each model, the newest run is at 0.25° and the older runs are at 0.5°.
 
 If the AIFS download fails, the IFS part of the site still updates. To add another model, add an entry to `MODELS` in `update_data.py` and to `MODEL_INFO` in `app.js`.
