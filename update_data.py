@@ -130,7 +130,13 @@ def plan(model="ifs"):
         cands.append(t); t -= dt.timedelta(hours=cyc)
     with ThreadPoolExecutor(8) as ex:
         ok = list(ex.map(lambda r: exists(url(r, steps_for(r, model)[-1], "index", model)), cands))
-    runs = [r for r, o in zip(cands, ok) if o][:n]
+    runs = [r for r, o in zip(cands, ok) if o][:n + 2]
+    if cfg["kind"] == "noaa":
+        # NOAA files don't always appear in step order: make sure every step of the run is there
+        with ThreadPoolExecutor(16) as ex:
+            full = [all(ex.map(lambda s: exists(url(r, s, "index", model)), steps_for(r, model))) for r in runs]
+        runs = [r for r, o in zip(runs, full) if o]
+    runs = runs[:n]
     if not runs: print(f"warning: no complete {model} run found")
     return runs
 
@@ -419,7 +425,9 @@ def run_model(model):
     os.makedirs(FRAG, exist_ok=True); entries = []
     for k, run in enumerate(runs):
         rid = run_id(run); got = have.get(rid, {})
-        need = [half_n] + ([full_n] if k == 0 else [])
+        # the newest run that can be shown gets full resolution too (if the newest planned run
+        # fails, the next one takes its place)
+        need = [half_n] + ([full_n] if not entries else [])
         missing = [n for n in need if n not in got]
         new = {}
         if missing:
