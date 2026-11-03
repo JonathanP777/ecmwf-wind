@@ -1,12 +1,12 @@
 /* Borders & lines: coastlines, country borders, states/provinces, US counties, lakes, rivers, cities, lat/lon grid,
-   plus basemap opacity/labels. All drawn on canvases in the 'coast' pane (above the colour shading), so the
+   plus basemap opacity. (Basemaps are label-free; City names is the only place-name layer.) All drawn on canvases in the 'coast' pane (above the colour shading), so the
    PNG export (draw.js) picks them up. Settings are saved in localStorage ('windLines').
    Data files in vendor/lines/*.json are delta-encoded polylines: {"s":scale,"l":[[x0,y0,dx1,dy1,...],...]}
    (lon/lat * scale as integers); built by tools/build_lines.sh from Natural Earth + US Census (public domain). */
 (function () {
 'use strict';
 const $ = id => document.getElementById(id);
-const { map, dark, darkRef, osm, hoverUI } = window._app;
+const { map, hoverUI } = window._app;
 
 // ---------- layer definitions (defaults keep the original look: coastlines + countries + states on) ----------
 const LAYERS = [
@@ -17,12 +17,12 @@ const LAYERS = [
   { k: 'states',    name: 'States / provinces', src: 'vendor/lines/admin1.json',      def: { on: true, color: '#a6a6a6', width: 0.6, opacity: 0.5, dash: 'solid' } },
   { k: 'countries', name: 'Country borders',    src: 'vendor/borders.geojson',        def: { on: true, color: '#bbbbbb', width: 0.7, opacity: 0.55, dash: 'dashed' } },
   { k: 'coast',     name: 'Coastlines',         src: 'vendor/coast.geojson',          def: { on: true, color: '#e8e8e8', width: 1, opacity: 0.75, dash: 'solid' } },
-  { k: 'cities',    name: 'City names',         kind: 'cities', src: 'vendor/lines/cities.json', def: { on: false, color: '#ffffff', width: 1, opacity: 0.9, dash: 'solid' } }
+  { k: 'cities',    name: 'City names',         kind: 'cities', src: 'vendor/lines/cities.json', def: { on: true, color: '#ffffff', width: 1, opacity: 0.9, dash: 'solid' } }
 ];
 const UI_ORDER = ['coast', 'countries', 'states', 'counties', 'lakes', 'rivers', 'cities', 'grid'];
 const PRESETS = ['#ffffff', '#bbbbbb', '#000000', '#ffd54a', '#ff4d4d', '#4fd1ff', '#5ee07a', '#ff5ad1'];
 const DASHES = ['solid', 'dashed', 'dotted'];
-const GEN_DEF = { above: false, bmOpacity: 1, bmLabels: true };
+const GEN_DEF = { above: false, bmOpacity: 1 };
 const byKey = {}; LAYERS.forEach(L_ => byKey[L_.k] = L_);
 
 // ---------- settings ----------
@@ -44,6 +44,7 @@ try {
     if (typeof s.opacity === 'number' && s.opacity >= 0.05 && s.opacity <= 1) d.opacity = s.opacity;
     if (DASHES.includes(s.dash)) d.dash = s.dash;
   });
+  if ('bmLabels' in saved) setTimeout(save, 0);   // drop the old basemap-labels setting
 } catch (e) {}
 function save() { try { localStorage.setItem('windLines', JSON.stringify(cfg)); } catch (e) {} }
 
@@ -159,7 +160,9 @@ function drawOverlay() {
       if (placed.some(q => box[0] < q[2] && box[2] > q[0] && box[1] < q[3] && box[3] > q[1])) continue;
       placed.push(box);
       ctx.globalAlpha = c.opacity;
-      ctx.fillStyle = c.color; ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(1.5, 2.2 * c.width), 0, Math.PI * 2); ctx.fill();
+      // filled dot with a dark ring, so it can't be mistaken for the hollow calm-wind barb circle
+      ctx.fillStyle = c.color; ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(2, 2.6 * c.width), 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(0,0,0,.9)'; ctx.stroke();
       ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.strokeText(r[0], p.x + 5, p.y);
       ctx.fillText(r[0], p.x + 5, p.y);
       if (++count > 350) break;
@@ -176,8 +179,6 @@ map.on('zoomend', () => { const zk = zoomKey(); if (zk !== zoomVis) { zoomVis = 
 function applyGeneral() {
   map.getPane('coast').style.zIndex = cfg.above ? 435 : 400;   // 435: above particles (420), isobars (425), barbs (430); below labels/readout/drawings
   map.getPane('tilePane').style.opacity = cfg.bmOpacity;
-  if (cfg.bmLabels) { if (!dark.hasLayer(darkRef)) dark.addLayer(darkRef); }
-  else if (dark.hasLayer(darkRef)) dark.removeLayer(darkRef);
 }
 let censusOn = false;
 function updateAttrib() {
@@ -233,15 +234,12 @@ function syncNotes() {
 }
 function syncGeneral() {
   $('lnAbove').checked = cfg.above; $('lnBm').value = cfg.bmOpacity; $('oLnBm').textContent = Math.round(cfg.bmOpacity * 100) + '%';
-  $('lnLabels').checked = cfg.bmLabels;
-  $('lnLabelsNote').textContent = map.hasLayer(osm) ? '(OpenStreetMap has its labels built in)' : '';
 }
 function syncAll() { UI_ORDER.forEach(syncRow); syncGeneral(); syncNotes(); }
 $('lnAbove').onchange = e => { cfg.above = e.target.checked; save(); applyGeneral(); };
 $('lnBm').oninput = e => { cfg.bmOpacity = parseFloat(e.target.value); save(); syncGeneral(); applyGeneral(); };
-$('lnLabels').onchange = e => { cfg.bmLabels = e.target.checked; save(); applyGeneral(); };
 map.on('baselayerchange', () => { applyGeneral(); syncGeneral(); });
-$('lnAllOff').onclick = () => { LAYERS.forEach(l => cfg.layers[l.k].on = false); save(); syncAll(); applyLines(); };
+$('lnAllOff').onclick = () => { LAYERS.forEach(l => cfg.layers[l.k].on = false); save(); syncAll(); applyGeneral(); applyLines(); };
 $('lnReset').onclick = () => { Object.assign(cfg, defaults()); save(); syncAll(); applyGeneral(); applyLines(); };
 
 // open / close: the sub-menu replaces the "Additional Map Settings" body

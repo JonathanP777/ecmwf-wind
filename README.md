@@ -153,12 +153,11 @@ on/off tick, a colour (picker + 8 presets) and, under ▸, width, opacity and li
 | US counties | off | `vendor/lines/us_counties.json` 239 KB (~96 KB) | loaded only when switched on, drawn from zoom 5 |
 | Lakes | off | `vendor/lines/lakes.json` 86 KB (~27 KB) | outlines of major lakes |
 | Rivers | off | `vendor/lines/rivers.json` 147 KB (~49 KB) | major rivers |
-| City names | off | `vendor/lines/cities.json` 89 KB (~40 KB) | ~3,200 places, more appear as you zoom in; overlapping names are skipped |
+| City names | on | `vendor/lines/cities.json` 89 KB (~40 KB) | ~3,200 places, more appear as you zoom in; overlapping names are skipped |
 | Lat/lon grid | off, dotted | (computed) | spacing 30° → 0.5° depending on zoom, labels at the edges |
 
 Also: "Draw lines on top of wind particles & barbs" (default off: lines sit above the colour layer
-but under the particles/barbs), basemap opacity (0–100 %), place-name labels on/off (Esri labels;
-OpenStreetMap has its labels built in), *Reset to defaults*, *All lines off*. Saved in the browser
+but under the particles/barbs), basemap opacity (0–100 %), *Reset to defaults*, *All lines off*. Saved in the browser
 (localStorage `windLines`). Lines are always below the readout and drawings, and are included in
 the PNG export. Files are only downloaded when their layer is on.
 
@@ -167,7 +166,9 @@ the PNG export. Files are only downloaded when their layer is on.
 - Forecast data: © ECMWF, open data, licence CC BY 4.0 (attribution required, shown on the map).
   HRRR and RRFS: NOAA/NCEP, public domain, via the NOAA Open Data Dissemination program on AWS
   (`noaa-hrrr-bdp-pds`, `noaa-rrfs-ops-pds`).
-- Basemap: Esri Dark Gray Canvas (free with attribution); OpenStreetMap selectable.
+- Basemaps (all label-free; place names come only from the City names layer): Esri Dark Gray Canvas
+  base, Esri Light Gray Canvas base, Esri World Imagery (satellite) — free with attribution.
+  OpenStreetMap was dropped because its tiles have labels printed in.
   (CARTO's free dark basemap now needs an API key, so it isn't used.)
 - Coastlines, borders, states/provinces, lakes, rivers, city names: Natural Earth (public domain).
   US counties: US Census Bureau cartographic boundary file `cb_2023_us_county_5m` (public domain), simplified.

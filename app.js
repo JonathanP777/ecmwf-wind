@@ -64,17 +64,16 @@ map.createPane('shade'); map.getPane('shade').style.zIndex = 350;
 map.createPane('particles'); map.getPane('particles').style.zIndex = 420;
 map.createPane('barbs'); map.getPane('barbs').style.zIndex = 430;
 map.createPane('isobars'); map.getPane('isobars').style.zIndex = 425; map.getPane('isobars').style.pointerEvents = 'none';
-map.createPane('labels'); map.getPane('labels').style.zIndex = 440; map.getPane('labels').style.pointerEvents = 'none';
 map.createPane('coast'); map.getPane('coast').style.zIndex = 400; map.getPane('coast').style.pointerEvents = 'none';
 const dataAttrib = 'Borders: Natural Earth';
 const esriAttrib = 'Basemap &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors';
-const darkRef = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', { maxZoom: 16, pane: 'labels', crossOrigin: 'anonymous' });
-const dark = L.layerGroup([
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', { attribution: esriAttrib + ' | ' + dataAttrib, maxZoom: 16, crossOrigin: 'anonymous' }),
-  darkRef
-]).addTo(map);
-const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | ' + dataAttrib, maxZoom: 19, crossOrigin: 'anonymous' });
-L.control.layers({ 'Dark (Esri)': dark, 'OpenStreetMap': osm }, null, { position: window.innerWidth < 600 ? 'topleft' : 'topright' }).addTo(map);
+// Basemaps are label-free: place names come only from the "City names" layer (lines.js).
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+const satAttrib = 'Basemap &copy; Esri, Maxar, Earthstar Geographics, and the GIS User Community';
+const dark = L.tileLayer(ESRI + 'Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', { attribution: esriAttrib + ' | ' + dataAttrib, maxZoom: 16, crossOrigin: 'anonymous' }).addTo(map);
+const light = L.tileLayer(ESRI + 'Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', { attribution: esriAttrib + ' | ' + dataAttrib, maxZoom: 16, crossOrigin: 'anonymous' });
+const sat = L.tileLayer(ESRI + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: satAttrib + ' | ' + dataAttrib, maxZoom: 18, crossOrigin: 'anonymous' });
+L.control.layers({ 'Dark (Esri)': dark, 'Light grey (Esri)': light, 'Satellite (Esri)': sat }, null, { position: window.innerWidth < 600 ? 'topleft' : 'topright' }).addTo(map);
 // coastlines, borders, counties, grid etc. are drawn by lines.js in the 'coast' pane (above the colour shading)
 
 // ---------- canvas layers ----------
@@ -828,7 +827,8 @@ fetch(DATA_BASE + 'index.json', { cache: 'no-cache' }).then(r => r.json()).then(
   await setModel(want, null);
   loop();
 });
-window._app = { map, settings, osm, dark, darkRef, hoverUI, get modelName() { return MODEL ? MODEL.name : 'ECMWF'; }, get modelKey() { return MODEL ? MODEL.key : 'ifs'; },
+window._app = { map, settings, dark, hoverUI,
+  get basemapCredit() { return map.hasLayer(sat) ? 'Esri, Maxar, Earthstar Geographics' : 'Esri, HERE, Garmin, © OpenStreetMap contributors'; }, get modelName() { return MODEL ? MODEL.name : 'ECMWF'; }, get modelKey() { return MODEL ? MODEL.key : 'ifs'; },
   get dataCredit() { return minfo().credit; } };   // shared with draw.js
 window._windDebug = { map, sample, sampleGust, sampleTemp, samplePres, samplePcp, sampleRefl, settings, openRun,
   get stepIdx() { return stepIdx; }, get field() { return field; }, get meta() { return meta; }, get index() { return INDEX; }, get model() { return MODEL; }, setModel };
