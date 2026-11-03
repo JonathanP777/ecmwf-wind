@@ -105,8 +105,9 @@ alpha channel of `wind_XXX.png` to mark the model area. There is also `isobars_X
 - The **newest run** of each model is published at full resolution (0.25° or ~3 km).
 - The **9 older runs** are published at half resolution (0.5° or ~6 km, every other grid point).
 
-Approximate sizes: IFS ~0.9 GB, AIFS ~0.7 GB, HRRR ~0.5 GB, RRFS ~0.9 GB for 10 runs each
-(about 3 GB in total, ~4 GB at the peak of a refresh, well inside R2's 10 GB free storage).
+Measured sizes (Nov 2026): IFS 0.86 GB, AIFS 0.61 GB, HRRR 0.42 GB, RRFS 1.15 GB for 10 runs each
+(about 3.05 GB in total; at most ~4 GB while a refresh keeps the previous folders, well inside
+R2's 10 GB free storage).
 
 ## Live website
 
