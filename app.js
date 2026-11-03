@@ -6,9 +6,16 @@ let INDEX = null, meta = null, field = null, stepIdx = 0;
 // ---------- models ----------
 // What each model offers comes from index.json ("models": gust yes/no, precip periods, runs, data path).
 // MODEL_INFO only adds wording for the menus. To add a model: add it in update_data.py MODELS (+ a line here).
+const ECMWF_CREDIT = 'ECMWF open data (CC BY 4.0)', NOAA_CREDIT = 'NOAA/NCEP via AWS Open Data';
 const MODEL_INFO = {
-  ifs:  { short: 'IFS',  label: 'ECMWF IFS (physics model)', title: 'ECMWF IFS forecast', stepTxt: '3-hourly' },
-  aifs: { short: 'AIFS', label: 'ECMWF AIFS (AI model)',     title: 'ECMWF AIFS forecast', stepTxt: '6-hourly' }
+  ifs:  { short: 'IFS',  label: 'ECMWF IFS (global, physics)', title: 'ECMWF IFS forecast', stepTxt: '3-hourly', credit: ECMWF_CREDIT,
+          link: 'https://www.ecmwf.int/en/forecasts/datasets/open-data' },
+  aifs: { short: 'AIFS', label: 'ECMWF AIFS (global, AI)',     title: 'ECMWF AIFS forecast', stepTxt: '6-hourly', credit: ECMWF_CREDIT,
+          link: 'https://www.ecmwf.int/en/forecasts/datasets/open-data' },
+  hrrr: { short: 'HRRR', label: 'NOAA HRRR (3 km, US)',        title: 'NOAA HRRR forecast',  stepTxt: 'hourly', credit: NOAA_CREDIT + ' (HRRR)',
+          link: 'https://registry.opendata.aws/noaa-hrrr-pds/' },
+  rrfs: { short: 'RRFS', label: 'NOAA RRFS (3 km, US)',        title: 'NOAA RRFS forecast',  stepTxt: 'hourly', credit: NOAA_CREDIT + ' (RRFS)',
+          link: 'https://registry.opendata.aws/noaa-rrfs-ops/' }
 };
 let MODEL = null;   // current entry of INDEX.models
 function minfo(m) { m = m || MODEL; return MODEL_INFO[m.key] || { short: m.name, label: m.name, title: m.name + ' forecast', stepTxt: '' }; }
@@ -22,8 +29,8 @@ const DEFAULTS = { units: 'kt', tempUnit: 'F', precipUnit: 'in', shade: 'speed',
   // pinpoint readout options ("Additional Map Settings" menu)
   // hoverAuto: show the variable(s) matching the displayed layer; hv* = extra (or, with auto off, the full manual set)
   hoverOn: true, hoverAuto: true, hoverStyle: 'compact', hvSpeed: false, hvDir: false, hvGust: false, hvTemp: false,
-  hvPres: false, hvPcp: false, hvPcpTot: false, hvCoord: false };
-const HOVER_KEYS = ['hoverOn', 'hoverAuto', 'hoverStyle', 'hvSpeed', 'hvDir', 'hvGust', 'hvTemp', 'hvPres', 'hvPcp', 'hvPcpTot', 'hvCoord'];
+  hvPres: false, hvPcp: false, hvPcpTot: false, hvRefl: false, hvCoord: false };
+const HOVER_KEYS = ['hoverOn', 'hoverAuto', 'hoverStyle', 'hvSpeed', 'hvDir', 'hvGust', 'hvTemp', 'hvPres', 'hvPcp', 'hvPcpTot', 'hvRefl', 'hvCoord'];
 const UNITS = {
   kt:  { f: 1.943844, label: 'kt',   name: 'knots', ticks: [0, 10, 20, 30, 40, 50, 60, 80, 100] },
   mph: { f: 2.236936, label: 'mph',  name: 'mph',   ticks: [0, 20, 40, 60, 80, 100] },
@@ -35,8 +42,8 @@ try {
   const saved = JSON.parse(localStorage.getItem('windSettings') || '{}');
   for (const k in DEFAULTS) if (k in saved && typeof saved[k] === typeof DEFAULTS[k]) settings[k] = saved[k];
   if (!UNITS[settings.units]) settings.units = DEFAULTS.units;
-  if (!['speed', 'gust', 'temp', 'precip', 'off'].includes(settings.shade)) settings.shade = DEFAULTS.shade;
-  if (!['3', '6', '24', 'total'].includes(settings.precipPeriod)) settings.precipPeriod = DEFAULTS.precipPeriod;
+  if (!['speed', 'gust', 'temp', 'precip', 'refl', 'off'].includes(settings.shade)) settings.shade = DEFAULTS.shade;
+  if (!['1', '3', '6', '24', 'total'].includes(settings.precipPeriod)) settings.precipPeriod = DEFAULTS.precipPeriod;
   if (!['F', 'C'].includes(settings.tempUnit)) settings.tempUnit = 'F';
   if (!['in', 'mm'].includes(settings.precipUnit)) settings.precipUnit = 'in';
   if (!['compact', 'detailed'].includes(settings.hoverStyle)) settings.hoverStyle = 'compact';
@@ -59,7 +66,7 @@ map.createPane('barbs'); map.getPane('barbs').style.zIndex = 430;
 map.createPane('isobars'); map.getPane('isobars').style.zIndex = 425; map.getPane('isobars').style.pointerEvents = 'none';
 map.createPane('labels'); map.getPane('labels').style.zIndex = 440; map.getPane('labels').style.pointerEvents = 'none';
 map.createPane('coast'); map.getPane('coast').style.zIndex = 400; map.getPane('coast').style.pointerEvents = 'none';
-const dataAttrib = 'Wind data: <a href="https://www.ecmwf.int/en/forecasts/datasets/open-data">ECMWF open data</a> (CC BY 4.0) | Coastlines: Natural Earth';
+const dataAttrib = 'Coastlines: Natural Earth';
 const esriAttrib = 'Basemap &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors';
 const dark = L.layerGroup([
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', { attribution: esriAttrib + ' | ' + dataAttrib, maxZoom: 16, crossOrigin: 'anonymous' }),
@@ -87,6 +94,8 @@ function fitCanvas(c, ratio) {
 // Each forecast step = PNG images whose colour channels hold 8-bit scaled values:
 //   wind_XXX.png: R=u, G=v, B=gust   met_XXX.png: R=2 m temp, G=MSL pressure, B=precip since run start
 //   pcp_XXX.png:  R/G/B = precip in previous 3 h / 6 h / 24 h  (loaded only when the precip layer is on)
+//   rad_XXX.png:  R = composite reflectivity (dBZ = v/2 - 32), G = precip in previous 1 h  (HRRR/RRFS only)
+// Regional models (HRRR/RRFS) cover only part of the lat/lon box: wind_XXX.png alpha = 0 outside the model domain.
 // Forecast data lives in a Cloudflare R2 bucket (DATA_BASE is set in config.js; 'data/' = served with the site).
 // Paths in index.json are relative to that root; each run entry has its folder in "dir".
 const DATA_BASE = window.DATA_BASE || 'data/';
@@ -113,18 +122,24 @@ async function loadStep(i) {
   const hit = cacheGet(key); if (hit) return hit;
   const st = meta.steps[i], n = String(st.hour).padStart(3, '0');
   const [w, m] = await Promise.all([loadImg(runBase() + 'wind_' + n + '.png' + bust()), loadImg(runBase() + 'met_' + n + '.png' + bust())]);
-  const f = { key, st, w: w.w, h: w.h, wind: w.px, met: m.px, pcp: null, iso: null };
+  // base + cache-buster are kept with the step so a late extra layer load still reads this run's folder
+  const f = { key, st, w: w.w, h: w.h, wind: w.px, met: m.px, pcp: null, rad: null, iso: null, base: runBase(), bq: bust() };
   cachePut(key, f); return f;
 }
 async function loadPcp(f) {
   if (f.pcp) return f;
   const n = String(f.st.hour).padStart(3, '0');
-  f.pcp = (await loadImg(runBase() + 'pcp_' + n + '.png' + bust())).px; return f;
+  f.pcp = (await loadImg(f.base + 'pcp_' + n + '.png' + f.bq)).px; return f;
+}
+function loadRad(f) {
+  if (f.rad) return Promise.resolve(f);
+  const n = String(f.st.hour).padStart(3, '0');
+  return f._radP || (f._radP = loadImg(f.base + 'rad_' + n + '.png' + f.bq).then(r => { f.rad = r.px; return f; }, e => { f._radP = null; throw e; }));
 }
 async function loadIso(f) {
   if (f.iso) return f;
   const n = String(f.st.hour).padStart(3, '0');
-  const j = await fetch(runBase() + 'isobars_' + n + '.json' + bust()).then(r => r.json());
+  const j = await fetch(f.base + 'isobars_' + n + '.json' + f.bq).then(r => r.json());
   // decode delta-encoded integer tenths of a degree
   j.lines.forEach(l => {
     const d = l.d, pts = new Float32Array(d.length); let x = 0, y = 0, x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
@@ -138,13 +153,17 @@ async function loadIso(f) {
 // ---------- field sampling (bilinear on the 8-bit values) ----------
 // returns [x0, x1, y0, y1 indices, weights] for a lat/lon, or null
 function cell(lat, lon) {
-  if (!field || lat > 90 || lat < -90) return null;
+  if (!field || lat > 90 || lat < -90 || field.w !== meta.width) return null;   // (step of a previous model/grid still shown)
   lon = ((lon + 180) % 360 + 360) % 360 - 180;
   const x = (lon - meta.lon0) / meta.dlon, y = (meta.lat0 - lat) / meta.dlat;
-  const x0 = Math.floor(x), y0 = Math.min(Math.floor(y), field.h - 2), fx = x - x0, fy = y - y0;
-  const W = field.w, x1 = (x0 + 1) % W;
-  return [(y0 * W + x0) * 4, (y0 * W + x1) * 4, ((y0 + 1) * W + x0) * 4, ((y0 + 1) * W + x1) * 4,
+  if (meta.global === false && (x < 0 || y < 0 || x > field.w - 1 || y > field.h - 1)) return null;   // outside a regional model
+  const x0 = Math.min(Math.floor(x), field.w - 1), y0 = Math.min(Math.floor(y), field.h - 2), fx = x - x0, fy = y - y0;
+  const W = field.w, x1 = meta.global === false ? Math.min(x0 + 1, W - 1) : (x0 + 1) % W;
+  const c = [(y0 * W + x0) * 4, (y0 * W + x1) * 4, ((y0 + 1) * W + x0) * 4, ((y0 + 1) * W + x1) * 4,
           (1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy];
+  // masked grids: all 4 surrounding points must be inside the model domain (alpha of the wind image)
+  if (meta.masked) { const px = field.wind; if (!px[c[0] + 3] || !px[c[1] + 3] || !px[c[2] + 3] || !px[c[3] + 3]) return null; }
+  return c;
 }
 function bil(px, c, ch) { return px[c[0] + ch] * c[4] + px[c[1] + ch] * c[5] + px[c[2] + ch] * c[6] + px[c[3] + ch] * c[7]; }
 const lin = (b, lo, hi) => lo + b / 255 * (hi - lo);
@@ -161,23 +180,37 @@ function sampleGust(lat, lon) {
 function sampleTemp(lat, lon) { const c = cell(lat, lon); return c ? lin(bil(field.met, c, 0), field.st.tMin, field.st.tMax) : null; }
 function samplePres(lat, lon) { const c = cell(lat, lon); return c ? lin(bil(field.met, c, 1), field.st.pMin, field.st.pMax) : null; }
 function sampleAcc(lat, lon) { const c = cell(lat, lon); return c ? sq(bil(field.met, c, 2), field.st.aMax) : null; }
-const PCH = { '3': [0, 'r3Max'], '6': [1, 'r6Max'], '24': [2, 'r24Max'] };
+const PCH = { '1': [1, 'r1Max', 'rad'], '3': [0, 'r3Max', 'pcp'], '6': [1, 'r6Max', 'pcp'], '24': [2, 'r24Max', 'pcp'] };
 function samplePcp(lat, lon, period) {
   if (period === 'total') return sampleAcc(lat, lon);
-  if (!field || !field.pcp) return null; const [ch, k] = PCH[period], mx = field.st[k]; if (mx == null) return null;
-  const c = cell(lat, lon); return c ? sq(bil(field.pcp, c, ch), mx) : null;
+  if (!field) return null; const [ch, k, img] = PCH[period], mx = field.st[k], px = field[img]; if (mx == null || !px) return null;
+  const c = cell(lat, lon); return c ? sq(bil(px, c, ch), mx) : null;
 }
+// composite reflectivity (dBZ); nearest point, null where no echo (< 5 dBZ)
+function sampleRefl(lat, lon) {
+  if (!field || !field.rad) return null; const c = cell(lat, lon); if (!c) return null;
+  const px = field.rad, b0 = px[c[0]], b1 = px[c[1]], b2 = px[c[2]], b3 = px[c[3]];
+  if (b0 && b1 && b2 && b3) return (b0 * c[4] + b1 * c[5] + b2 * c[6] + b3 * c[7]) / 2 - 32;   // echo all round: smooth
+  const k = c[4] >= c[5] && c[4] >= c[6] && c[4] >= c[7] ? 0 : c[5] >= c[6] && c[5] >= c[7] ? 1 : c[6] >= c[7] ? 2 : 3;
+  const b = px[c[k]]; return b ? b / 2 - 32 : null;                                               // edge of an echo: nearest
+}
+function pcpImg(p) { return PCH[p] ? PCH[p][2] : null; }
 // precip period actually shown at this step (falls back when the chosen one isn't available)
 function pcpAvail(p, st) { if (MODEL && !MODEL.pcp.includes(p)) return false; return p === 'total' ? st.hour > 0 : st[PCH[p][1]] != null; }
 // colour layer actually shown: a layer the current model lacks (e.g. gust in AIFS) falls back to wind speed
 // (the saved choice is kept, so switching back to a model that has it brings it back)
 function hasGust() { return !MODEL || MODEL.gust; }
-function effShade() { return settings.shade === 'gust' && !hasGust() ? 'speed' : settings.shade; }
+function hasRefl() { return !!(MODEL && MODEL.refl); }
+function effShade() {
+  if (settings.shade === 'gust' && !hasGust()) return 'speed';
+  if (settings.shade === 'refl' && !hasRefl()) return 'precip';
+  return settings.shade;
+}
 function effPeriod() {
   const st = meta && meta.steps[stepIdx]; if (!st) return settings.precipPeriod;
   const want = settings.precipPeriod;
   if (pcpAvail(want, st)) return want;
-  for (const p of { '3': ['6'], '6': ['3'], '24': ['6', '3'] }[want] || []) if (pcpAvail(p, st)) return p;
+  for (const p of { '1': ['3', '6'], '3': ['1', '6'], '6': ['3'], '24': ['6', '3'] }[want] || []) if (pcpAvail(p, st)) return p;
   return null;
 }
 // screen geometry helpers: in Web Mercator, lon is linear in x and lat depends only on y
@@ -210,25 +243,34 @@ const PTHR = {
   in: { int: [0.01,0.02,0.05,0.1,0.15,0.25,0.5,0.75,1,1.5,2,3,4], total: [0.05,0.1,0.25,0.5,1,1.5,2,3,4,6,8,12,20] },
   mm: { int: [0.1,0.5,1,2,4,6,10,15,20,30,50,75,100], total: [1,2.5,5,10,20,30,50,75,100,150,200,300,500] }
 };
+// radar reflectivity colours (dBZ), NWS-like
+const RTHR = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70];
+const RCOL = [[4,233,231],[1,159,244],[3,0,244],[2,253,2],[1,197,1],[0,142,0],[253,248,2],[229,188,0],[253,149,0],[253,0,0],[212,0,0],[188,0,0],[248,0,253],[152,84,198]];
+function rIndex(dbz) { let k = -1; while (k + 1 < RTHR.length && dbz >= RTHR[k + 1]) k++; return k; }
 function pThresholds(period) { return PTHR[settings.precipUnit][period === 'total' ? 'total' : 'int']; }
 function pIndex(mm, thr) {  // -1 = transparent
   const v = settings.precipUnit === 'in' ? mm / 25.4 : mm; let k = -1;
   while (k + 1 < thr.length && v >= thr[k + 1]) k++; return k;
 }
 
+// while switching models the previous model's step is still on screen for a moment: don't
+// mix it with the new model's layers (it is redrawn as soon as the new step has loaded)
+function stale() { return !!(field && MODEL && !field.key.startsWith(MODEL.key + ':')); }
 // ---------- colour shading ----------
 function drawShade() {
   fitCanvas(shadeCv, 1);
   const ctx = shadeCv.getContext('2d'); ctx.clearRect(0, 0, shadeCv.width, shadeCv.height);
   const mode = effShade();
-  if (!field || mode === 'off') return;
+  if (!field || mode === 'off' || stale()) return;
   if (mode === 'gust' && field.st.gMax === undefined) return;
   let period = null, thr = null;
   if (mode === 'precip') {
     period = effPeriod(); if (!period) return;
-    if (period !== 'total' && !field.pcp) { const f = field; loadPcp(f).then(() => { if (f === field) { drawShade(); } }); return; }
+    const img = pcpImg(period);
+    if (img && !field[img]) { const f = field; (img === 'rad' ? loadRad(f) : loadPcp(f)).then(() => { if (f === field) { drawShade(); } }); return; }
     thr = pThresholds(period);
   }
+  if (mode === 'refl' && !field.rad) { const f = field; loadRad(f).then(() => { if (f === field) drawShade(); }); return; }
   const g = viewGeom(), R = 3, sw = Math.ceil(g.w / R), sh = Math.ceil(g.h / R);
   const off = document.createElement('canvas'); off.width = sw; off.height = sh;
   const octx = off.getContext('2d'), im = octx.createImageData(sw, sh), d = im.data;
@@ -245,6 +287,10 @@ function drawShade() {
       } else if (mode === 'temp') {
         const c = sampleTemp(lat, lon); if (c === null) continue;
         const k = (Math.min(120, Math.max(-40, Math.round(c * 9 / 5 + 32))) + 40) * 3; r = TLUT[k]; gg = TLUT[k + 1]; b = TLUT[k + 2]; a = 165;
+      } else if (mode === 'refl') {
+        const z = sampleRefl(lat, lon); if (z === null) continue;
+        const k = rIndex(z); if (k < 0) continue;
+        [r, gg, b] = RCOL[k]; a = 200;
       } else {
         const mm = samplePcp(lat, lon, period); if (mm === null) continue;
         const k = pIndex(mm, thr); if (k < 0) continue;
@@ -392,7 +438,15 @@ function resetParticles() {
   parts = [];
   for (let i = 0; i < nP; i++) parts.push(newParticle(Math.random() * PART_AGE | 0));
 }
-function newParticle(age) { return { x: Math.random() * geom.w, y: Math.random() * geom.h, age: age || 0 }; }
+function newParticle(age) {
+  // regional models: try a few spots so particles start inside the model domain
+  let x, y;
+  for (let k = 0; k < (meta && meta.global === false ? 6 : 1); k++) {
+    x = Math.random() * geom.w; y = Math.random() * geom.h;
+    if (k === 5 || !field || sample(geom.rowLat[Math.round(y)], geom.lonL + x * geom.dLon)) break;
+  }
+  return { x, y, age: age || 0 };
+}
 function stepParticles() {
   const ctx = partCv.getContext('2d');
   ctx.globalCompositeOperation = 'destination-in';
@@ -450,27 +504,30 @@ $('slider').oninput = e => setStep(+e.target.value);
 const PCP_LABELS = { '1': '1 h total', '3': '3 h total', '6': '6 h total', '24': '24 h total', total: 'Total since run start' };
 function syncModelMenus() {
   const mi = minfo(), sh = $('shadeSel'), ps = $('pcpSel');
-  for (const o of sh.options) if (o.value === 'gust') {
-    o.disabled = !hasGust(); o.textContent = hasGust() ? 'Wind gust' : 'Wind gust (not in ' + mi.short + ')';
+  for (const o of sh.options) {
+    if (o.value === 'gust') { o.disabled = !hasGust(); o.textContent = hasGust() ? 'Wind gust' : 'Wind gust (not in ' + mi.short + ')'; }
+    if (o.value === 'refl') { o.disabled = !hasRefl(); o.textContent = hasRefl() ? 'Radar (reflectivity)' : 'Radar (not in ' + mi.short + ')'; }
   }
   sh.value = effShade();
   for (const o of ps.options) {
-    const has = o.value !== '1' && (!MODEL || MODEL.pcp.includes(o.value));
-    o.textContent = PCP_LABELS[o.value] + (has ? '' : o.value === '1' ? ' (not available: ' + (MODEL && MODEL.key !== 'ifs' ? mi.short + ' is ' + mi.stepTxt : 'ECMWF free data is 3-hourly') + ')'
-      : ' (not in ' + mi.short + ': ' + mi.stepTxt + ' data)');
-    if (!has) o.disabled = true;
+    const has = !MODEL || MODEL.pcp.includes(o.value);
+    o.textContent = PCP_LABELS[o.value] + (has ? '' : ' (not in ' + mi.short + ': ' + mi.stepTxt + ' data)');
+    o.disabled = !has;
   }
 }
 function updateNotes() {
   const st = meta && meta.steps[stepIdx], n = $('shadeNote'), sel = $('pcpSel');
   const shade = effShade(), mi = minfo();
   sel.parentElement.style.display = shade === 'precip' ? '' : 'none';
+  if (shade === 'precip' && settings.shade === 'refl') { /* precip shown instead of radar */ }
   if (!st) return;
   syncModelMenus();
-  for (const o of sel.options) if (o.value !== '1') o.disabled = !pcpAvail(o.value, st);
+  for (const o of sel.options) o.disabled = !pcpAvail(o.value, st);
   let txt = '';
   if (settings.shade === 'gust' && !hasGust()) txt = mi.short + ' has no gust data: showing wind speed';
-  else if (shade === 'gust') txt = st.gustPeriod ? 'max gust in previous ' + st.gustPeriod + ' h' : 'no gust at +0h (starts +3h)';
+  else if (settings.shade === 'refl' && !hasRefl()) txt = mi.short + ' has no radar data: showing precipitation';
+  else if (shade === 'gust') txt = st.gustPeriod ? 'max gust in previous ' + st.gustPeriod + ' h' : st.gustPeriod === 0 ? 'gust at the valid time' : 'no gust at +0h (starts +3h)';
+  else if (shade === 'refl') txt = 'simulated composite radar reflectivity (dBZ)';
   else if (shade === 'precip') {
     const p = effPeriod(), want = settings.precipPeriod;
     // show the period actually used when the saved one doesn't exist in this model (saved choice is kept)
@@ -479,15 +536,15 @@ function updateNotes() {
     else {
       txt = p === 'total' ? 'total since run start (' + st.hour + ' h)' : p + ' h total, ending at valid time';
       if (p !== want) txt += !MODEL.pcp.includes(want) ? ' (' + mi.short + ' has ' + mi.stepTxt + ' data: no ' + want + ' h totals)'
-        : want === '3' ? ' (3 h only to +144h)' : want === '24' ? ' (24 h starts at +24h)' : ' (6 h starts at +6h)';
+        : want === '3' && MODEL.global !== false ? ' (3 h only to +144h)' : ' (' + want + ' h starts at +' + want + 'h)';
     }
   }
   n.textContent = txt;
   drawLegend();
 }
 $('shadeSel').value = settings.shade; $('pcpSel').value = settings.precipPeriod;
-$('shadeSel').onchange = e => { if (e.target.value === 'gust' && !hasGust()) { e.target.value = effShade(); return; } settings.shade = e.target.value; saveSettings(); drawShade(); updateNotes(); };
-$('pcpSel').onchange = e => { if (e.target.value === '1') { e.target.value = settings.precipPeriod; return; } settings.precipPeriod = e.target.value; saveSettings(); drawShade(); updateNotes(); };
+$('shadeSel').onchange = e => { if ((e.target.value === 'gust' && !hasGust()) || (e.target.value === 'refl' && !hasRefl())) { e.target.value = effShade(); return; } settings.shade = e.target.value; saveSettings(); drawShade(); updateNotes(); };
+$('pcpSel').onchange = e => { if (MODEL && !MODEL.pcp.includes(e.target.value)) { e.target.value = effPeriod() || settings.precipPeriod; return; } settings.precipPeriod = e.target.value; saveSettings(); drawShade(); updateNotes(); };
 [['tParticles', 'particles'], ['tBarbs', 'barbs'], ['tIsobars', 'isobars']].forEach(([id, k]) => {
   $(id).checked = settings[k];
   $(id).onchange = e => {
@@ -516,11 +573,12 @@ function autoVars() {
   if (sh === 'gust') a.add('hvGust');
   if (sh === 'temp') a.add('hvTemp');
   if (sh === 'precip') a.add('hvPcp');
+  if (sh === 'refl') a.add('hvRefl');
   if (settings.isobars) a.add('hvPres');
   return a;
 }
 // only variables the current model has (AIFS: no gust)
-function modelHas(k) { return k !== 'hvGust' || hasGust(); }
+function modelHas(k) { return k === 'hvGust' ? hasGust() : k === 'hvRefl' ? hasRefl() : true; }
 function shown(k) { return modelHas(k) && (settings[k] || autoVars().has(k)); }
 function readoutRows(la, lo) {
   const p = sample(la, lo);
@@ -534,7 +592,7 @@ function readoutRows(la, lo) {
   if (shown('hvDir')) rows.push(['Direction', 'from ' + COMPASS[Math.round(dir / 22.5) % 16] + sub(dir.toFixed(0) + '°')]);
   if (shown('hvGust')) {
     const gs = sampleGust(la, lo);
-    rows.push(['Gust', gs === null ? na : fmtSpeed(gs) + sub(second(gs) + ' · max, prev ' + st.gustPeriod + ' h')]);
+    rows.push(['Gust', gs === null ? na : fmtSpeed(gs) + sub(second(gs) + (st.gustPeriod ? ' · max, prev ' + st.gustPeriod + ' h' : ' · at valid time'))]);
   }
   if (shown('hvTemp')) {
     const c = sampleTemp(la, lo);
@@ -546,12 +604,17 @@ function readoutRows(la, lo) {
   if (shown('hvPcp')) {
     const per = st.hour > 0 ? effPeriod() : null;
     if (st.hour === 0) rows.push(['Precip', na]);
-    else if (per === 'total' || !per || !field.pcp) { const v = sampleAcc(la, lo); rows.push(['Precip total', fmtPrecip(v) + sub(other(v) + ' · since run start')]); totalShown = true; }
+    else if (per === 'total' || !per) { const v = sampleAcc(la, lo); rows.push(['Precip total', fmtPrecip(v) + sub(other(v) + ' · since run start')]); totalShown = true; }
+    else if (!field[pcpImg(per)]) { (pcpImg(per) === 'rad' ? loadRad(field) : loadPcp(field)).catch(() => {}); const v = sampleAcc(la, lo); rows.push(['Precip total', fmtPrecip(v) + sub(other(v) + ' · since run start')]); totalShown = true; }
     else { const v = samplePcp(la, lo, per); rows.push(['Precip ' + per + ' h', fmtPrecip(v) + sub(other(v) + ' · ending at valid time')]); }
   }
   if (shown('hvPcpTot') && !totalShown && !(shown('hvPcp') && st.hour === 0)) {
     if (st.hour === 0) rows.push(['Precip total', na]);
     else { const v = sampleAcc(la, lo); rows.push(['Precip total', fmtPrecip(v) + sub(other(v) + ' · since run start')]); }
+  }
+  if (shown('hvRefl')) {
+    if (!field.rad) { loadRad(field).catch(() => {}); rows.push(['Radar', '<span class="sub">loading…</span>']); }
+    else { const z = sampleRefl(la, lo); rows.push(['Radar', z === null ? 'no echo' + sub('< 5 dBZ') : z.toFixed(0) + ' dBZ' + sub('composite')]); }
   }
   if (shown('hvCoord')) {
     const lon = ((lo + 180) % 360 + 360) % 360 - 180;
@@ -560,10 +623,12 @@ function readoutRows(la, lo) {
   return rows;
 }
 function showTip(e) {
-  if (!settings.hoverOn || !field) { tip.style.display = 'none'; return; }
+  if (!settings.hoverOn || !field || stale()) { tip.style.display = 'none'; return; }
   const rows = readoutRows(e.latlng.lat, e.latlng.lng);
-  if (!rows || !rows.length) { tip.style.display = 'none'; return; }
-  tip.innerHTML = rows.map(([k, v]) => `<span class="k">${k}</span><span class="v">${v}</span>`).join('');
+  if (!rows && MODEL && MODEL.region) {   // regional model: say why there is no value
+    tip.innerHTML = `<span class="k">Outside</span><span class="v">${minfo().short} covers the ${MODEL.region.name} only</span>`;
+  } else if (!rows || !rows.length) { tip.style.display = 'none'; return; }
+  else tip.innerHTML = rows.map(([k, v]) => `<span class="k">${k}</span><span class="v">${v}</span>`).join('');
   tip.style.display = 'grid';
   const x = e.containerPoint.x + 14, y = e.containerPoint.y + 14, sz = map.getSize();
   tip.style.left = Math.max(4, Math.min(x, sz.x - tip.offsetWidth - 6)) + 'px';
@@ -582,7 +647,7 @@ const hoverUI = (function () {
     if (open && !$('settings').hidden) $('settingsBtn').click();   // only one panel open at a time (they overlap on short screens)
   };
   $('settingsBtn').addEventListener('click', () => setTimeout(() => { if (!$('settings').hidden) setOpen(false); }, 0));
-  const boxes = { hoverOn: 'hOn', hvSpeed: 'hSpeed', hvDir: 'hDir', hvGust: 'hGust', hvTemp: 'hTemp', hvPres: 'hPres', hvPcp: 'hPcp', hvPcpTot: 'hPcpTot', hvCoord: 'hCoord' };
+  const boxes = { hoverOn: 'hOn', hvSpeed: 'hSpeed', hvDir: 'hDir', hvGust: 'hGust', hvTemp: 'hTemp', hvPres: 'hPres', hvPcp: 'hPcp', hvPcpTot: 'hPcpTot', hvRefl: 'hRefl', hvCoord: 'hCoord' };
   function sync() {
     const auto = autoVars();
     for (const k in boxes) $(boxes[k]).checked = settings[k];
@@ -631,6 +696,10 @@ function drawLegend() {
     if (settings.tempUnit === 'F') [-40, -20, 0, 20, 40, 60, 80, 100, 120].forEach(t => tick((t + 40) / 160 * W, t));
     else [-40, -30, -20, -10, 0, 10, 20, 30, 40, 48].forEach(t => t !== 48 && tick((t * 9 / 5 + 32 + 40) / 160 * W, t));
     $('legendTitle').textContent = '2 m temperature (°' + settings.tempUnit + ')';
+  } else if (mode === 'refl') {
+    const bw = W / RTHR.length;
+    RTHR.forEach((t, k) => { ctx.fillStyle = `rgb(${RCOL[k].join(',')})`; ctx.fillRect(k * bw, 0, bw - 1, c.height); if (k % 2 === 0) tick(k * bw + 2, t); });
+    $('legendTitle').textContent = 'Radar reflectivity, composite (dBZ)';
   } else if (mode === 'precip') {
     const per = effPeriod() || settings.precipPeriod, thr = pThresholds(per), bw = W / thr.length;
     thr.forEach((t, k) => { ctx.fillStyle = `rgb(${PCOL[k].join(',')})`; ctx.fillRect(k * bw, 0, bw - 1, c.height); if (k % 2 === 0) tick(k * bw + 2, t); });
@@ -684,7 +753,7 @@ async function openRun(id, keepValid) {
   const m = await fetch(modelBase() + runDir(id) + '/meta.json', { cache: 'no-cache' }).then(r => r.json());
   meta = m; field = null;
   const latest = MODEL.runs[0].id === id;
-  $('runinfo').textContent = 'Model run ' + fmtTime(m.run) + (latest ? ' (latest)' : '') + ' · ' + m.res + '° grid';
+  $('runinfo').textContent = 'Model run ' + fmtTime(m.run) + (latest ? ' (latest)' : '') + ' · ' + (m.resLabel || m.res + '°') + ' grid';
   const s = $('slider'); s.max = m.steps.length - 1;
   let idx = 0, note = '';
   if (keepValid) {
@@ -715,9 +784,23 @@ function fillRuns() {
   });
 }
 // switch model; opens its newest run that covers the valid time on screen (else its newest run) at that valid time
+// regional models: outline of the model domain on the map, and zoom there if the view is elsewhere
+let coverage = null, creditNow = null;
+function showCoverage(m) {
+  if (coverage) { map.removeLayer(coverage); coverage = null; }
+  if (creditNow) map.attributionControl.removeAttribution(creditNow);
+  const mi = minfo(m); creditNow = 'Forecast: <a href="' + mi.link + '">' + mi.credit + '</a>';
+  map.attributionControl.addAttribution(creditNow);
+  if (!m.region) return;
+  coverage = L.polyline(m.region.outline, { pane: 'coast', color: '#ffd54a', weight: 1.6, opacity: 0.85, dashArray: '6 5', interactive: false }).addTo(map);
+  const b = L.latLngBounds(m.region.bounds), v = map.getBounds();
+  // zoom to the domain when the view doesn't show it well (centre outside, or zoomed far out)
+  if (!b.contains(map.getCenter()) || map.getZoom() < 3 || !v.intersects(b)) map.fitBounds(b, { padding: [10, 10], animate: false });
+}
 async function setModel(key, keepValid) {
   const m = INDEX.models.find(x => x.key === key && x.runs.length) || INDEX.models[0];
   MODEL = m; $('modelSel').value = m.key;
+  showCoverage(m);
   try { localStorage.setItem('windModel', m.key); } catch (e) {}
   $('modelTitle').textContent = minfo().title;
   fillRuns();
@@ -745,7 +828,8 @@ fetch(DATA_BASE + 'index.json', { cache: 'no-cache' }).then(r => r.json()).then(
   await setModel(want, null);
   loop();
 });
-window._app = { map, settings, osm, get modelName() { return MODEL ? MODEL.name : 'ECMWF'; }, get modelKey() { return MODEL ? MODEL.key : 'ifs'; } };   // shared with draw.js
-window._windDebug = { map, sample, sampleGust, sampleTemp, samplePres, samplePcp, settings, openRun,
+window._app = { map, settings, osm, get modelName() { return MODEL ? MODEL.name : 'ECMWF'; }, get modelKey() { return MODEL ? MODEL.key : 'ifs'; },
+  get dataCredit() { return minfo().credit; } };   // shared with draw.js
+window._windDebug = { map, sample, sampleGust, sampleTemp, samplePres, samplePcp, sampleRefl, settings, openRun,
   get stepIdx() { return stepIdx; }, get field() { return field; }, get meta() { return meta; }, get index() { return INDEX; }, get model() { return MODEL; }, setModel };
 })();

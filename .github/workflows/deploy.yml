@@ -5,8 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
   schedule:
-    # ECMWF open data for each run (00/06/12/18 UTC) appears ~7-9 h later
-    - cron: '30 1,7,13,19 * * *'
+    # hourly: HRRR has a new run every hour (ready ~1.5 h after the run time); RRFS every 3 h,
+    # ECMWF IFS/AIFS every 6 h (ready ~7-9 h after). Jobs with nothing new finish in about a minute.
+    - cron: '20 * * * *'
 
 permissions:
   contents: read
@@ -17,10 +18,24 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  # The bucket is the store: each job reads the published index.json to see which runs are
+  # already there and only builds the missing ones.
+  DATA_URL: https://pub-797c80c27d0f42d6ad578c6ed6044be2.r2.dev/
+  R2_ACCOUNT_ID: 109b9e12fb8a09f6c53ab91bd3a5281e
+  R2_BUCKET: ecmwf-wind-data
+
 jobs:
-  build:
+  # one job per model, side by side; a failure in one model never blocks the others
+  model:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [ifs, aifs, hrrr, rrfs]
+    env:
+      BUILD_BUDGET_MIN: '35'     # stop starting new runs after 35 min; the rest are built by the next job
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,93 +44,61 @@ jobs:
           cache: pip
       - name: Install Python packages
         run: pip install -r requirements.txt
-      - name: Check ecCodes
-        run: python -c "import eccodes; print('ecCodes', eccodes.codes_get_api_version())"
-      # Which runs should the site show? (5 newest complete IFS runs, 2 newest AIFS runs)
-      - name: Plan runs
-        id: plan
-        run: python update_data.py plan
-      # Each run, once built, is kept in the GitHub Actions cache, so later jobs only
-      # download runs they have not seen before (and a failed job keeps finished runs).
-      - uses: actions/cache/restore@v4
-        id: r1
-        with: { path: 'cache/${{ steps.plan.outputs.run1 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run1 }}' }
-      - uses: actions/cache/restore@v4
-        id: r2
-        with: { path: 'cache/${{ steps.plan.outputs.run2 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run2 }}' }
-      - uses: actions/cache/restore@v4
-        id: r3
-        with: { path: 'cache/${{ steps.plan.outputs.run3 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run3 }}' }
-      - uses: actions/cache/restore@v4
-        id: r4
-        with: { path: 'cache/${{ steps.plan.outputs.run4 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run4 }}' }
-      - uses: actions/cache/restore@v4
-        id: r5
-        with: { path: 'cache/${{ steps.plan.outputs.run5 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run5 }}' }
-      # AIFS (AI model): the 2 newest runs, cached the same way (cache/aifs-<run id>)
-      - uses: actions/cache/restore@v4
-        id: a1
-        with: { path: 'cache/${{ steps.plan.outputs.aifs1 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.aifs1 }}' }
-      - uses: actions/cache/restore@v4
-        id: a2
-        with: { path: 'cache/${{ steps.plan.outputs.aifs2 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.aifs2 }}' }
-      - name: Download new ECMWF runs and assemble site data
-        env:
-          RUNS: ${{ steps.plan.outputs.runs }}
-          AIFS_RUNS: ${{ steps.plan.outputs.aifs_runs }}
-        run: |
-          for i in 1 2 3; do python update_data.py build && break; echo "retrying in 60s"; sleep 60; done
-          test -f data/index.json
-          du -sh data cache
-      - uses: actions/cache/save@v4
-        if: always() && steps.r1.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.run1 }}/DONE') != ''
-        with: { path: 'cache/${{ steps.plan.outputs.run1 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run1 }}' }
-      - uses: actions/cache/save@v4
-        if: always() && steps.r2.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.run2 }}/DONE') != ''
-        with: { path: 'cache/${{ steps.plan.outputs.run2 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run2 }}' }
-      - uses: actions/cache/save@v4
-        if: always() && steps.r3.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.run3 }}/DONE') != ''
-        with: { path: 'cache/${{ steps.plan.outputs.run3 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run3 }}' }
-      - uses: actions/cache/save@v4
-        if: always() && steps.r4.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.run4 }}/DONE') != ''
-        with: { path: 'cache/${{ steps.plan.outputs.run4 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run4 }}' }
-      - uses: actions/cache/save@v4
-        if: always() && steps.r5.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.run5 }}/DONE') != ''
-        with: { path: 'cache/${{ steps.plan.outputs.run5 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run5 }}' }
-      - uses: actions/cache/save@v4
-        if: always() && steps.a1.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.aifs1 }}/DONE') != ''
-        with: { path: 'cache/${{ steps.plan.outputs.aifs1 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.aifs1 }}' }
-      - uses: actions/cache/save@v4
-        if: always() && steps.a2.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.aifs2 }}/DONE') != ''
-        with: { path: 'cache/${{ steps.plan.outputs.aifs2 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.aifs2 }}' }
-      # Forecast data lives in Cloudflare R2 (bucket ecmwf-wind-data), not in the Pages site.
-      # r2_sync.py uploads only new/changed files, deletes runs that rolled off, and uploads
-      # index.json last so visitors never see a half-uploaded run. If the R2 secrets are not
-      # set yet, the data is published with the Pages site instead (old behaviour).
-      - name: Upload data to Cloudflare R2
-        id: upload
+      - name: Build missing runs (${{ matrix.model }})
+        run: python update_data.py model ${{ matrix.model }}
+      - name: Upload new runs to Cloudflare R2
         env:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ACCOUNT_ID: 109b9e12fb8a09f6c53ab91bd3a5281e
-          R2_BUCKET: ecmwf-wind-data
         run: |
-          if [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ]; then
-            echo "::warning::R2 secrets not set - publishing data with the Pages site instead"
-            echo "mode=pages" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          pip install boto3
-          python r2_sync.py data
-          echo "mode=r2" >> "$GITHUB_OUTPUT"
+          mkdir -p data
+          du -sh data
+          python r2_sync.py upload data
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frag-${{ matrix.model }}
+          path: frag/${{ matrix.model }}.json
+          retention-days: 1
+          if-no-files-found: ignore
+
+  # merge the model entries into index.json (a failed model keeps its previous entry),
+  # upload it last, then delete runs that rolled off
+  publish:
+    needs: model
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: frag-*
+          path: frag
+          merge-multiple: true
+      - name: Publish index.json and clean up old runs
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          ls frag || true
+          python update_data.py publish
+          python r2_sync.py publish data
+
+  # the website itself (no forecast data inside) - only redeployed when the code changes
+  site:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Assemble site
         run: |
           mkdir -p _site
           cp -r index.html config.js app.js draw.js style.css favicon.ico vendor _site/
-          if [ "${{ steps.upload.outputs.mode }}" != "r2" ]; then
-            cp -r data _site/
-            echo "window.DATA_BASE = 'data/';" > _site/config.js
-          fi
           touch _site/.nojekyll
           du -sh _site
       - uses: actions/configure-pages@v5
@@ -124,7 +107,7 @@ jobs:
           path: _site
 
   deploy:
-    needs: build
+    needs: site
     runs-on: ubuntu-latest
     environment:
       name: github-pages

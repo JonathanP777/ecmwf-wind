@@ -487,7 +487,7 @@ async function renderPNG(withTiles) {
   ctx.fillStyle = '#ffd166'; ctx.font = '600 14px system-ui, sans-serif'; ctx.fillText(l1, 20, 25, cw - 20);
   ctx.fillStyle = '#dfe5ec'; ctx.font = '12px system-ui, sans-serif'; ctx.fillText(l2, 20, 43, cw - 20);
   // credits
-  const cr = 'Data: ECMWF open data (CC BY 4.0)' + (withTiles ? (map.hasLayer(osm) ? ' · Basemap © OpenStreetMap contributors' : ' · Basemap © Esri, HERE, Garmin, © OpenStreetMap contributors') : '') + ' · Coastlines: Natural Earth';
+  const cr = 'Data: ' + ((window._app && window._app.dataCredit) || 'ECMWF open data (CC BY 4.0)') + (withTiles ? (map.hasLayer(osm) ? ' · Basemap © OpenStreetMap contributors' : ' · Basemap © Esri, HERE, Garmin, © OpenStreetMap contributors') : '') + ' · Coastlines: Natural Earth';
   ctx.font = '10px system-ui, sans-serif'; const crw = ctx.measureText(cr).width + 12;
   ctx.fillStyle = 'rgba(12,14,18,.75)'; ctx.fillRect(W - crw, H - 15, crw, 15);
   ctx.fillStyle = '#c8ced6'; ctx.textAlign = 'right'; ctx.fillText(cr, W - 6, H - 7.5);

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="favicon.ico">
-  <title>ECMWF Forecast Viewer</title>
+  <title>Weather Forecast Viewer (ECMWF, HRRR, RRFS)</title>
 <link rel="stylesheet" href="vendor/leaflet.css">
 <link rel="stylesheet" href="vendor/leaflet-geoman.css">
 <link rel="stylesheet" href="style.css">
@@ -32,9 +32,9 @@
   </div>
   <div class="row"><label for="shadeSel">Colours</label>
     <select id="shadeSel"><option value="speed">Wind speed</option><option value="gust">Wind gust</option>
-      <option value="temp">Temperature (2 m)</option><option value="precip">Precipitation</option><option value="off">Off</option></select>
+      <option value="temp">Temperature (2 m)</option><option value="precip">Precipitation</option><option value="refl">Radar (reflectivity)</option><option value="off">Off</option></select>
     <span class="pcpwrap"><select id="pcpSel" title="Precipitation period">
-      <option value="1" disabled>1 h (not available: ECMWF free data is 3-hourly)</option>
+      <option value="1">1 h total</option>
       <option value="3">3 h total</option><option value="6">6 h total</option><option value="24">24 h total</option>
       <option value="total">Total since run start</option></select></span></div>
   <div id="shadeNote"></div>
@@ -84,6 +84,7 @@
         <label><input type="checkbox" id="hPres"> Pressure</label>
         <label><input type="checkbox" id="hPcp"> Precipitation (selected period)</label>
         <label><input type="checkbox" id="hPcpTot"> Precip total since run start</label>
+        <label><input type="checkbox" id="hRefl"> Radar reflectivity</label>
         <label><input type="checkbox" id="hCoord"> Coordinates</label>
       </div>
       <div class="amsSub">Style</div>

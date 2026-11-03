@@ -1,66 +1,85 @@
 #!/usr/bin/env python3
-"""Build the forecast data for the website from ECMWF open data (IFS and AIFS, 0.25deg).
+"""Build the forecast data for the website and keep the Cloudflare R2 bucket up to date.
+
+Models (see MODELS below; add a new entry there + a line in MODEL_INFO in app.js to add a model):
+  ifs   ECMWF IFS (physics model, global), 10 newest runs (00/06/12/18 UTC).
+  aifs  ECMWF AIFS Single (AI model, global), 10 newest runs, 0-360 h every 6 h, no gust.
+  hrrr  NOAA HRRR (3 km, contiguous US), 10 newest hourly runs: 0-18 h hourly (0-48 h at 00/06/12/18 UTC).
+  rrfs  NOAA RRFS v1 (3 km, contiguous US subset), 10 newest runs of the cycles with full hourly output
+        on AWS (00/03/06/.../21 UTC): 0-84 h hourly at 00/06/12/18 UTC, 0-18 h at 03/09/15/21 UTC.
+        (RRFS also runs every hour, but for the other hours AWS only has 15-minute "subh" files.)
+  For each model the newest run is published at full resolution (ECMWF 0.25 deg, NOAA ~3 km) and
+  every run also at half resolution (0.5 deg / ~6 km); older runs are shown at half resolution.
 
 Usage:
-  python update_data.py plan    # list the newest complete runs of each model (writes GitHub step outputs)
-  python update_data.py build   # make sure each of those runs is in cache/, then assemble data/
-  python update_data.py         # plan + build
+  python update_data.py model <key>   # build the runs of one model that are not in the bucket yet,
+                                      # stage them in data/ and (with R2 secrets) upload them;
+                                      # writes frag/<key>.json (this model's entry for index.json)
+  python update_data.py publish       # merge frag/*.json with the current index.json -> data/index.json
+                                      # (upload + clean-up of old runs: r2_sync.py publish data)
+  python update_data.py local [keys]  # local testing without R2: build everything into data/
 
-Models (see MODELS below; add a new entry there to add a model):
-  ifs   ECMWF IFS (physics model), 5 newest runs: newest at 0.25deg, older 4 at 0.5deg.
-        Data: runs/<run id>/<0p25|0p50>/
-  aifs  ECMWF AIFS Single (machine-learning model), 2 newest runs: newest 0.25deg, other 0.5deg.
-        Every run (00/06/12/18 UTC) goes 0-360 h every 6 h (61 steps). No gust parameter.
-        tp is in kg m-2 (= mm), accumulated from the run start. Data: aifs/runs/<run id>/<0p25|0p50>/
+The bucket is the store: run folders never change once uploaded (<model path><run id>/<res>/), so each
+job only builds runs that are new. index.json (uploaded last) says which runs the site shows.
+Where the "current index" comes from: env DATA_URL (public bucket URL) or, if not set, data/index.json.
+A failure in one model never blocks the others (separate jobs; the old entry is kept on failure).
 
-What ECMWF IFS open data offers (checked Oct 2026 against data.ecmwf.int index files):
-  * 00/12 UTC runs: 0-144 h every 3 h, then 150-360 h every 6 h (85 steps).
-  * 06/18 UTC runs (stream "oper" too): 0-144 h every 3 h (49 steps).
-  * data.ecmwf.int keeps about 4 days of runs, so the 5 newest runs (~30 h) are always there.
-  * Gust: "10fg" = max gust over the previous 1 h (+3..+90 h) or 6 h (+150..+360 h);
-    "10fg3" = max over the previous 3 h (+93..+144 h). Undefined at +0 h.
-  * tp (total precipitation, metres) is accumulated from the start of the run.
+ECMWF IFS open data (checked Oct/Nov 2026 against data.ecmwf.int):
+  * 00/12 UTC runs: 0-144 h every 3 h, then 150-360 h every 6 h (85 steps); 06/18 UTC: 0-144 h every 3 h.
+  * data.ecmwf.int keeps about 3 days of runs (12 runs), so 10 runs can be built from scratch.
+  * Gust "10fg" = max over previous 1 h (+3..+90 h) / 6 h (+150..), "10fg3" = previous 3 h (+93..+144 h).
+  * tp (total precipitation, m) is accumulated from the run start (AIFS: kg m-2 = mm).
+NOAA HRRR/RRFS: AWS open data (noaa-hrrr-bdp-pds, noaa-rrfs-ops-pds), several weeks of history; see hires.py.
 
-Per run and forecast step we write (all 8-bit, scaled with per-step min/max in meta.json):
-  wind_XXX.png  RGB: u, v, gust
+Per run and forecast step we write (8-bit, scaled with per-step min/max in meta.json):
+  wind_XXX.png  RGB(A): u, v, gust (A = inside model domain, regional models only)
   met_XXX.png   RGB: 2 m temperature, mean sea level pressure, precip accumulated since run start
-  pcp_XXX.png   RGB: precip in the previous 3 h, 6 h, 24 h (from differencing tp; 3 h only to +144 h,
-                6 h from +6 h, 24 h from +24 h). Precip channels use sqrt scaling (fine near 0).
-  (1 h totals are not possible: open data steps are 3-hourly at best.)
-  isobars_XXX.json  MSLP contour lines every 4 hPa + H/L centres (computed on a smoothed 0.5deg grid;
-                    points as [lon*10, lat*10] integers, delta encoded)
-Each run is built at full 0.25deg resolution ("full") and also subsampled to 0.5deg ("half").
-The newest run is published at full resolution, the 4 older runs at 0.5deg to keep the site small.
-Built runs are kept in cache/<run id>/ (GitHub Actions cache), so each scheduled job only
-downloads runs it has not seen before.
+  pcp_XXX.png   RGB: precip in the previous 3 h, 6 h, 24 h (sqrt scaling)
+  rad_XXX.png   RGB: composite reflectivity, precip in the previous 1 h (NOAA models only)
+  isobars_XXX.json  MSLP contour lines every 4 hPa + H/L centres
 """
-import json, os, sys, shutil, time, datetime as dt, urllib.request, urllib.error
+import json, os, sys, shutil, time, datetime as dt, urllib.request, urllib.error, glob
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import eccodes
 from PIL import Image
 from scipy import ndimage
 import contourpy
+import hires
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
 CACHE = os.path.join(HERE, "cache")
+FRAG = os.path.join(HERE, "frag")
 BASE = "https://data.ecmwf.int/forecasts"
 LONG_STEPS = list(range(0, 145, 3)) + list(range(150, 361, 6))
 SHORT_STEPS = list(range(0, 145, 3))
 AIFS_STEPS = list(range(0, 361, 6))
 GUST_PARAMS = ("10fg", "10fg3", "10fg6")
-# Per-model settings. "pcp" = precip periods the site can offer; "gust" = has a gust layer.
+HRRR_URL = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.{d:%Y%m%d}/conus/hrrr.t{d:%H}z.wrfsfcf{s:02d}.grib2"
+RRFS_URL = "https://noaa-rrfs-ops-pds.s3.amazonaws.com/rrfs.{d:%Y%m%d}/{d:%H}/rrfs.t{d:%H}z.2dfld.3km.f{s:03d}.conus.grib2"
+# Per-model settings. "pcp" = precip periods the site can offer; "gust" = has a gust layer; "refl" = radar layer.
+# "cycle" = hours between runs; "search" = how many hours back to look for runs; "res" = folder names (full, half).
 MODELS = {
-    "ifs":  {"name": "ECMWF IFS", "long": "ECMWF IFS open data", "dir": "ifs", "nRuns": 5,
-             "steps": lambda run: LONG_STEPS if run.hour in (0, 12) else SHORT_STEPS,
-             "cache": "", "site": "runs", "gust": True, "pcp": ["3", "6", "24", "total"]},
-    "aifs": {"name": "ECMWF AIFS", "long": "ECMWF AIFS Single open data", "dir": "aifs-single", "nRuns": 2,
-             "steps": lambda run: AIFS_STEPS,
-             "cache": "aifs-", "site": "aifs/runs", "gust": False, "pcp": ["6", "24", "total"]},
+    "ifs":  {"name": "ECMWF IFS", "long": "ECMWF IFS open data", "kind": "ecmwf", "dir": "ifs", "nRuns": 10,
+             "steps": lambda run: LONG_STEPS if run.hour in (0, 12) else SHORT_STEPS, "cycle": 6, "search": 96,
+             "cache": "", "site": "runs", "gust": True, "refl": False, "pcp": ["3", "6", "24", "total"],
+             "res": ("0p25", "0p50")},
+    "aifs": {"name": "ECMWF AIFS", "long": "ECMWF AIFS Single open data", "kind": "ecmwf", "dir": "aifs-single", "nRuns": 10,
+             "steps": lambda run: AIFS_STEPS, "cycle": 6, "search": 96,
+             "cache": "aifs-", "site": "aifs/runs", "gust": False, "refl": False, "pcp": ["6", "24", "total"],
+             "res": ("0p25", "0p50")},
+    "hrrr": {"name": "NOAA HRRR", "long": "NOAA HRRR (AWS open data)", "kind": "noaa", "url": HRRR_URL, "msl": "MSLMA",
+             "nRuns": 10, "steps": lambda run: list(range(0, 49 if run.hour % 6 == 0 else 19)), "cycle": 1, "search": 18,
+             "cache": "hrrr-", "site": "hrrr/runs", "gust": True, "refl": True, "pcp": ["1", "3", "6", "24", "total"],
+             "res": ("3km", "6km")},
+    "rrfs": {"name": "NOAA RRFS", "long": "NOAA RRFS v1 (AWS open data)", "kind": "noaa", "url": RRFS_URL, "msl": "MSLET",
+             "nRuns": 10, "steps": lambda run: list(range(0, 85 if run.hour % 6 == 0 else 19)), "cycle": 3, "search": 45,
+             "cache": "rrfs-", "site": "rrfs/runs", "gust": True, "refl": True, "pcp": ["1", "3", "6", "24", "total"],
+             "res": ("3km", "6km")},
 }
-N_RUNS = 5   # IFS runs (kept for the GitHub step outputs run1..run5)
 FORMAT = 3   # bump to invalidate cached runs when the file format changes
+DEFAULT_DATA_URL = "https://pub-797c80c27d0f42d6ad578c6ed6044be2.r2.dev/"
 
 def http(url, rng=None, tries=5):
     err = None
@@ -79,29 +98,40 @@ def http(url, rng=None, tries=5):
     raise RuntimeError(f"failed {url}: {err}")
 
 def url(run, step, ext, model="ifs"):
-    return (f"{BASE}/{run:%Y%m%d}/{run:%H}z/{MODELS[model]['dir']}/0p25/oper/"
+    cfg = MODELS[model]
+    if cfg["kind"] == "noaa":
+        return cfg["url"].format(d=run, s=step) + (".idx" if ext == "index" else "")
+    return (f"{BASE}/{run:%Y%m%d}/{run:%H}z/{cfg['dir']}/0p25/oper/"
             f"{run:%Y%m%d%H%M%S}-{step}h-oper-fc.{ext}")
 
 def steps_for(run, model="ifs"): return MODELS[model]["steps"](run)
 def run_id(run): return run.strftime("%Y%m%d%H")
 def cache_dir(run, model): return os.path.join(CACHE, MODELS[model]["cache"] + run_id(run))
 
+def exists(u):
+    """HEAD request: True if the file is there"""
+    for k in range(4):
+        try:
+            req = urllib.request.Request(u, method="HEAD", headers={"User-Agent": "ecmwf-wind-map"})
+            with urllib.request.urlopen(req, timeout=30): return True
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 404): return False
+        except Exception: pass
+        time.sleep(2 * (k + 1))
+    return False
+
 def plan(model="ifs"):
     """The newest runs of a model whose last step is published (newest first)."""
-    n = MODELS[model]["nRuns"]
+    cfg = MODELS[model]; n, cyc = cfg["nRuns"], cfg["cycle"]
     now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None, minute=0, second=0, microsecond=0)
-    t = now.replace(hour=now.hour // 6 * 6)
-    runs = []
-    for _ in range(16):
-        if http(url(t, steps_for(t, model)[-1], "index", model)) is not None:
-            runs.append(t)
-            if len(runs) == n: break
-        elif runs:
-            print(f"warning: gap in available {model} runs at", t)
-        t -= dt.timedelta(hours=6)
-    if not runs:
-        if model == "ifs": raise SystemExit("No complete ECMWF IFS run found")
-        print(f"warning: no complete {model} run found")
+    t = now.replace(hour=now.hour // cyc * cyc)
+    cands = []
+    while t >= now - dt.timedelta(hours=cfg["search"]):
+        cands.append(t); t -= dt.timedelta(hours=cyc)
+    with ThreadPoolExecutor(8) as ex:
+        ok = list(ex.map(lambda r: exists(url(r, steps_for(r, model)[-1], "index", model)), cands))
+    runs = [r for r, o in zip(cands, ok) if o][:n]
+    if not runs: print(f"warning: no complete {model} run found")
     return runs
 
 # ---------------------------------------------------------------- downloading
@@ -230,6 +260,71 @@ def fetch_tp(run, step, model="ifs"):
     # IFS gives metres of water; AIFS gives kg m-2 (= mm)
     return step, a * (1000.0 if units.strip() == "m" else 1.0)
 
+# ---------------------------------------------------------------- NOAA HRRR / RRFS
+def noaa_inventory(run, step, model):
+    txt = http(url(run, step, "index", model))
+    if txt is None: raise RuntimeError(f"missing {model} index {run_id(run)} +{step}h")
+    return hires.parse_idx(txt.decode())
+
+def noaa_field(run, step, rng, model):
+    raw = http(url(run, step, "grib2", model), (rng[0], rng[1]) if rng[1] is not None else (rng[0], rng[0] + 50_000_000))
+    g = eccodes.codes_new_from_message(raw)
+    try:
+        nx, ny = eccodes.codes_get(g, "Nx"), eccodes.codes_get(g, "Ny")
+        if (nx, ny) != (hires.NX, hires.NY): raise RuntimeError(f"unexpected {model} grid {nx}x{ny}")
+        vals = eccodes.codes_get_values(g).reshape(ny, nx)
+        if not eccodes.codes_get(g, "jScansPositively"): vals = vals[::-1]
+    finally:
+        eccodes.codes_release(g)
+    return hires.regrid(vals)
+
+def noaa_tp(run, step, model):
+    if step == 0: return step, None
+    inv = noaa_inventory(run, step, model)
+    return step, noaa_field(run, step, hires.pick(inv, "APCP", "surface", step, acc=True), model).astype(np.float32)
+
+def process_noaa_step(run, steps, i, out, tpall, model):
+    cfg, step = MODELS[model], steps[i]
+    inv = noaa_inventory(run, step, model)
+    f = lambda var, lev: noaa_field(run, step, hires.pick(inv, var, lev, step), model)
+    g = hires.grid(); ins = g["inside"]
+    ug, vg = f("UGRD", "10 m above ground"), f("VGRD", "10 m above ground")
+    u, v = hires.rotate_wind(ug, vg)
+    gust, t2, msl, refc = f("GUST", "surface"), f("TMP", "2 m above ground"), f(cfg["msl"], "mean sea level"), f("REFC", "entire atmosphere")
+    st = {"hour": step, "valid": f"{run + dt.timedelta(hours=step):%Y-%m-%dT%H:%MZ}"}
+    r, st["uMin"], st["uMax"] = q8(u[ins]); gg, st["vMin"], st["vMax"] = q8(v[ins]); b, st["gMin"], st["gMax"] = q8(np.maximum(gust[ins], 0))
+    st["gustPeriod"] = 0          # HRRR/RRFS gust = gust at the valid time
+    put = lambda q: _fill(q, ins)
+    wind = np.dstack([put(r), put(gg), put(b), (ins * 255).astype(np.uint8)])
+    tq, st["tMin"], st["tMax"] = q8(t2[ins] - 273.15); pq, st["pMin"], st["pMax"] = q8(msl[ins] / 100.0)
+    tp = tpall[step] if tpall[step] is not None else np.zeros(ins.shape, np.float32)
+    aq, st["aMax"] = qsqrt(np.nan_to_num(tp[ins]))
+    met = np.dstack([put(tq), put(pq), put(aq)])
+    pch = []
+    for hrs, key in ((1, "r1Max"), (3, "r3Max"), (6, "r6Max"), (24, "r24Max")):
+        if step >= hrs and (step - hrs) in tpall:
+            prev = tpall[step - hrs]
+            q, st[key] = qsqrt(np.nan_to_num(tp[ins] - (prev[ins] if prev is not None else 0))); pch.append(put(q))
+        else:
+            st[key] = None; pch.append(np.zeros(ins.shape, np.uint8))
+    pcp = np.dstack(pch[1:])
+    # composite reflectivity, fixed scale: byte = 2 * (dBZ + 32); below 5 dBZ stored as 0 ("no echo")
+    dbz = np.nan_to_num(refc, nan=-32)
+    rq = np.where(dbz < 5, 0, np.clip(np.round((dbz + 32) * 2), 0, 255)).astype(np.uint8); rq[~ins] = 0
+    rad = np.dstack([rq, pch[0], np.zeros(ins.shape, np.uint8)])
+    name = f"{step:03d}"
+    for res, sl in (("full", np.s_[:, :]), ("half", np.s_[::2, ::2])):
+        d = os.path.join(out, res)
+        save_png(wind[sl], os.path.join(d, f"wind_{name}.png")); save_png(met[sl], os.path.join(d, f"met_{name}.png"))
+        save_png(pcp[sl], os.path.join(d, f"pcp_{name}.png")); save_png(rad[sl], os.path.join(d, f"rad_{name}.png"))
+    iso = hires.isobars_regional(msl / 100.0, ins, g["lon0"], g["lat0"], hires.DLON, hires.DLAT)
+    json.dump(iso, open(os.path.join(out, "isobars", f"isobars_{name}.json"), "w"), separators=(",", ":"))
+    return st
+
+def _fill(q, ins):
+    a = np.zeros(ins.shape, np.uint8); a[ins] = q; return a
+
+# ---------------------------------------------------------------- building runs
 def is_built(run, model):
     done = os.path.join(cache_dir(run, model), "DONE")
     return os.path.exists(done) and open(done).read().strip() == str(FORMAT)
@@ -242,88 +337,162 @@ def build_run(run, model="ifs"):
     shutil.rmtree(out, ignore_errors=True)
     for d in ("full", "half", "isobars"): os.makedirs(os.path.join(out, d))
     steps = steps_for(run, model)
-    with ThreadPoolExecutor(8) as ex:
-        tpall = dict(ex.map(lambda st: fetch_tp(run, st, model), steps))   # accumulated precip, mm
-        sts = list(ex.map(lambda i: process_step(run, steps, i, out, tpall, model), range(len(steps))))
+    noaa = MODELS[model]["kind"] == "noaa"
+    with ThreadPoolExecutor(6 if noaa else 8) as ex:
+        if noaa:
+            tpall = dict(ex.map(lambda st: noaa_tp(run, st, model), steps))
+            sts = list(ex.map(lambda i: process_noaa_step(run, steps, i, out, tpall, model), range(len(steps))))
+        else:
+            tpall = dict(ex.map(lambda st: fetch_tp(run, st, model), steps))   # accumulated precip, mm
+            sts = list(ex.map(lambda i: process_step(run, steps, i, out, tpall, model), range(len(steps))))
     del tpall
     json.dump({"run": f"{run:%Y-%m-%dT%H:%MZ}", "id": rid, "steps": sts}, open(os.path.join(out, "steps.json"), "w"))
     open(os.path.join(out, "DONE"), "w").write(str(FORMAT))
-    print(f"{model} run {rid}: built {len(steps)} steps in {time.time() - t0:.0f} s")
+    print(f"{model} run {rid}: built {len(steps)} steps in {time.time() - t0:.0f} s", flush=True)
 
-def assemble(plans):
-    """plans: {model: [runs newest first]}. Writes data/ (atomically replaced)."""
-    tmp = DATA + ".tmp"; shutil.rmtree(tmp, ignore_errors=True); os.makedirs(tmp)
+def grid_meta(model, res):
+    """map grid of a published folder"""
+    f = 1 if res == "full" else 2
+    if MODELS[model]["kind"] == "noaa":
+        g = hires.grid()
+        return {"res": round(hires.DLON * f, 3), "resLabel": f"~{3 * f} km", "width": (g["W"] + f - 1) // f,
+                "height": (g["H"] + f - 1) // f, "lon0": g["lon0"], "lat0": g["lat0"],
+                "dlon": round(hires.DLON * f, 4), "dlat": round(hires.DLAT * f, 4), "global": False}
+    return {"res": 0.25 * f, "resLabel": f"{0.25 * f}°", "width": 1440 // f, "height": 721 if f == 1 else 361,
+            "lon0": -180.0, "lat0": 90.0, "dlon": 0.25 * f, "dlat": 0.25 * f, "global": True}
+
+def region(model):
+    """bounds + outline of a regional model (None for global models)"""
+    if MODELS[model]["kind"] != "noaa": return None
+    o = hires.domain_outline(60)
+    lats, lons = [p[0] for p in o], [p[1] for p in o]
+    return {"name": "contiguous US", "bounds": [[min(lats), min(lons)], [max(lats), max(lons)]], "outline": o}
+
+def stage(run, model, res, gen):
+    """copy a built run folder (one resolution) into data/ with its meta.json; returns the folder name"""
+    cfg = MODELS[model]; rid = run_id(run); src = cache_dir(run, model)
+    rdir = f"{rid}/{cfg['res'][0 if res == 'full' else 1]}"
+    dst = os.path.join(DATA, cfg["site"], rdir)
+    shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(os.path.join(src, res), dst)
+    shutil.copytree(os.path.join(src, "isobars"), dst, dirs_exist_ok=True)
+    info = json.load(open(os.path.join(src, "steps.json")))
+    meta = {"model": cfg["long"], "modelKey": model, "id": rid, "run": info["run"], **grid_meta(model, res),
+            "steps": info["steps"], "generated": gen}
+    if cfg["kind"] == "noaa": meta["masked"] = True
+    json.dump(meta, open(os.path.join(dst, "meta.json"), "w"), separators=(",", ":"))
+    return rdir, meta
+
+# ---------------------------------------------------------------- index.json
+def current_index():
+    """the index.json the site uses now (bucket via DATA_URL, else local data/index.json)"""
+    u = os.environ.get("DATA_URL")
+    try:
+        if u:
+            raw = http(u.rstrip("/") + "/index.json?t=%d" % time.time())
+            return json.loads(raw) if raw else None
+        p = os.path.join(DATA, "index.json")
+        return json.load(open(p)) if os.path.exists(p) else None
+    except Exception as e:
+        print("warning: could not read current index.json:", e); return None
+
+def model_entry(model, runs):
+    cfg = MODELS[model]
+    e = {"key": model, "name": cfg["name"], "path": f"{cfg['site']}/", "gust": cfg["gust"], "refl": cfg["refl"],
+         "pcp": cfg["pcp"], "global": cfg["kind"] != "noaa", "runs": runs}
+    if region(model): e["region"] = region(model)
+    return e
+
+def run_model(model):
+    """build + stage + upload the runs of one model that are missing in the bucket; write frag/<model>.json"""
+    t0 = time.time(); budget = float(os.environ.get("BUILD_BUDGET_MIN", "35")) * 60
+    cfg = MODELS[model]; full_n, half_n = cfg["res"]
     gen = f"{dt.datetime.now(dt.timezone.utc):%Y-%m-%dT%H:%MZ}"
-    models = []
-    for model, runs in plans.items():
-        cfg = MODELS[model]; idx = []
-        for run in runs:
-            if not is_built(run, model): print(f"warning: {model} run {run_id(run)} not built, skipped"); continue
-            rid = run_id(run); src = cache_dir(run, model)
-            res = "full" if not idx else "half"          # newest available run at full resolution
-            # each resolution gets its own folder, so a published folder never changes (safe incremental upload)
-            rdir = f"{rid}/{'0p25' if res == 'full' else '0p50'}"
-            dst = os.path.join(tmp, cfg["site"], rdir)
-            shutil.copytree(os.path.join(src, res), dst)
-            shutil.copytree(os.path.join(src, "isobars"), dst, dirs_exist_ok=True)
-            info = json.load(open(os.path.join(src, "steps.json")))
-            f = 1 if res == "full" else 2
-            meta = {"model": cfg["long"], "modelKey": model, "id": rid, "run": info["run"], "res": 0.25 * f,
-                    "width": 1440 // f, "height": 721 if f == 1 else 361, "lon0": -180.0, "lat0": 90.0,
-                    "dlon": 0.25 * f, "dlat": 0.25 * f, "steps": info["steps"], "generated": gen}
-            json.dump(meta, open(os.path.join(dst, "meta.json"), "w"), separators=(",", ":"))
-            idx.append({"id": rid, "dir": rdir, "run": info["run"], "res": meta["res"], "nSteps": len(info["steps"]),
-                        "maxHour": info["steps"][-1]["hour"]})
-        if model == "ifs" and not idx: raise SystemExit("no IFS run built")
-        models.append({"key": model, "name": cfg["name"], "path": f"{cfg['site']}/",
-                       "gust": cfg["gust"], "pcp": cfg["pcp"], "runs": idx})
-    ifs = next(m for m in models if m["key"] == "ifs")
-    # "runs" (top level) = IFS runs, same as before AIFS was added; "models" lists every model
-    # paths are relative to the data root (Cloudflare R2 bucket, or data/ on GitHub Pages)
-    json.dump({"generated": gen, "layout": 2, "runs": ifs["runs"], "models": models},
-              open(os.path.join(tmp, "index.json"), "w"), indent=1)
-    shutil.rmtree(DATA, ignore_errors=True); os.rename(tmp, DATA)
-    size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(DATA) for f in fs)
-    print(f"Site data: {size / 1e6:.0f} MB")
-    for m in models:
-        for r in m["runs"]: print("  ", m["key"], r)
+    ix = current_index() or {}
+    old = next((m for m in ix.get("models", []) if m["key"] == model), None)
+    have = {}                                     # run id -> {folder name: run entry}
+    for r in (old or {}).get("runs", []):
+        for d in r.get("dirs", [r.get("dir", r["id"])]):
+            have.setdefault(r["id"], {})[d.split("/")[-1]] = r
+    runs = plan(model)
+    print(f"{model} runs:", ", ".join(run_id(r) for r in runs) or "none", flush=True)
+    os.makedirs(FRAG, exist_ok=True); entries = []
+    for k, run in enumerate(runs):
+        rid = run_id(run); got = have.get(rid, {})
+        need = [half_n] + ([full_n] if k == 0 else [])
+        missing = [n for n in need if n not in got]
+        new = {}
+        if missing:
+            if time.time() - t0 > budget:
+                print(f"{model} run {rid}: time budget used up, will be built by a later job")
+            else:
+                try:
+                    build_run(run, model)
+                    for n in missing:
+                        new[n] = stage(run, model, "full" if n == full_n else "half", gen)
+                except Exception as e:
+                    print(f"warning: {model} run {rid} failed: {e}", flush=True)
+        avail = set(got) | set(new)
+        if not avail: continue
+        show = full_n if (not entries and full_n in avail) else (half_n if half_n in avail else full_n)
+        if show in new:
+            rdir, meta = new[show]; steps = meta["steps"]
+            e = {"id": rid, "dir": rdir, "run": meta["run"], "res": meta["res"], "resLabel": meta["resLabel"],
+                 "nSteps": len(steps), "maxHour": steps[-1]["hour"]}
+        else:
+            e = dict(got[show]); e["dir"] = f"{rid}/{show}"
+            # resolution of a folder built by an earlier job: derive it from the folder name
+            e["res"] = grid_meta(model, "full" if show == full_n else "half")["res"]
+            e["resLabel"] = grid_meta(model, "full" if show == full_n else "half")["resLabel"]
+        # keep only what is needed: newest run = full + half, older runs = half (the old full folder is
+        # deleted by the garbage collection one refresh later)
+        keep = [n for n in need if n in avail] or [show]
+        e["dirs"] = sorted(f"{rid}/{n}" for n in keep)
+        entries.append(e)
+        # free disk: the staged copy in data/ is what gets uploaded; the build cache is not needed again
+        if new and not os.environ.get("KEEP_CACHE"): shutil.rmtree(cache_dir(run, model), ignore_errors=True)
+    entry = model_entry(model, entries)
+    json.dump(entry, open(os.path.join(FRAG, model + ".json"), "w"), indent=1)
+    print(f"{model}: {len(entries)} of {len(runs)} runs available, took {time.time() - t0:.0f} s")
+    return entry
 
-def run_list(env, model):
-    if os.environ.get("RUNS"):   # CI: same run list as the "plan" step
-        return [dt.datetime.strptime(r, "%Y%m%d%H") for r in os.environ.get(env, "").split()]
-    return plan(model)
+def publish():
+    """data/index.json = new model entries (frag/) + unchanged entries of models whose job failed"""
+    ix = current_index() or {}
+    old = {m["key"]: m for m in ix.get("models", [])}
+    models = []
+    for key in MODELS:
+        p = os.path.join(FRAG, key + ".json")
+        if os.path.exists(p):
+            e = json.load(open(p))
+            if not e["runs"] and key in old: e = old[key]; print(f"{key}: no runs now, keeping previous entry")
+        elif key in old:
+            e = old[key]; print(f"warning: {key}: no new entry (job failed?), keeping previous entry")
+        else: continue
+        if e["runs"]: models.append(e)
+    if not models: raise SystemExit("no model has any run")
+    ifs = next((m for m in models if m["key"] == "ifs"), {"runs": []})
+    gen = f"{dt.datetime.now(dt.timezone.utc):%Y-%m-%dT%H:%MZ}"
+    os.makedirs(DATA, exist_ok=True)
+    # "runs" (top level) = IFS runs (as in the first versions of the site); "models" lists every model.
+    # paths are relative to the data root (Cloudflare R2 bucket); a run's files are at path + dir + "/".
+    json.dump({"generated": gen, "layout": 3, "runs": ifs["runs"], "models": models},
+              open(os.path.join(DATA, "index.json"), "w"), indent=1)
+    for m in models:
+        print(f"  {m['key']}: {len(m['runs'])} runs, newest {m['runs'][0]['id']} ({m['runs'][0]['resLabel'] if 'resLabel' in m['runs'][0] else m['runs'][0]['res']})")
 
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "all"
-    if mode == "build":
-        plans = {"ifs": run_list("RUNS", "ifs"), "aifs": run_list("AIFS_RUNS", "aifs")}
+    mode = sys.argv[1] if len(sys.argv) > 1 else "local"
+    if mode == "model":
+        run_model(sys.argv[2])
+    elif mode == "publish":
+        publish()
+    elif mode == "local":
+        keys = sys.argv[2:] or list(MODELS)
+        for k in keys: run_model(k)
+        publish()
     else:
-        plans = {m: plan(m) for m in MODELS}
-    for m, runs in plans.items(): print(f"{m} runs:", ", ".join(run_id(r) for r in runs) or "none")
-    if mode in ("plan", "all") and os.environ.get("GITHUB_OUTPUT"):
-        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            runs = plans["ifs"]
-            for k in range(N_RUNS):
-                f.write(f"run{k + 1}={run_id(runs[k]) if k < len(runs) else 'none'}\n")
-            f.write("runs=" + " ".join(run_id(r) for r in runs) + "\n")
-            ar = plans["aifs"]
-            for k in range(MODELS["aifs"]["nRuns"]):
-                f.write(f"aifs{k + 1}={'aifs-' + run_id(ar[k]) if k < len(ar) else 'none'}\n")
-            f.write("aifs_runs=" + " ".join(run_id(r) for r in ar) + "\n")
-    if mode == "plan": return
-    t0 = time.time()
-    for run in plans["ifs"]: build_run(run, "ifs")
-    for run in plans["aifs"]:
-        # AIFS problems must not stop the IFS site from updating: skip the run and carry on
-        try: build_run(run, "aifs")
-        except Exception as e: print(f"warning: AIFS run {run_id(run)} failed: {e}")
-    # drop cache dirs of runs that are no longer needed (keeps local disk tidy)
-    keep = {os.path.basename(cache_dir(r, m)) for m, rs in plans.items() for r in rs}
-    if os.path.isdir(CACHE):
-        for d in os.listdir(CACHE):
-            if d not in keep: shutil.rmtree(os.path.join(CACHE, d), ignore_errors=True)
-    assemble(plans)
-    print(f"Total {time.time() - t0:.0f} s")
+        raise SystemExit(__doc__)
 
 if __name__ == "__main__":
     main()
