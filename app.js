@@ -709,16 +709,16 @@ function fillRuns() {
     sel.appendChild(o);
   });
 }
-// switch model; keeps the valid time on screen (same run time if the new model has it, else its latest run)
+// switch model; opens its newest run that covers the valid time on screen (else its newest run) at that valid time
 async function setModel(key, keepValid) {
   const m = INDEX.models.find(x => x.key === key && x.runs.length) || INDEX.models[0];
-  const prevRun = meta && meta.run;
   MODEL = m; $('modelSel').value = m.key;
   try { localStorage.setItem('windModel', m.key); } catch (e) {}
   $('modelTitle').textContent = minfo().title;
   fillRuns();
-  const same = prevRun && m.runs.find(r => r.run === prevRun);
-  const id = same ? same.id : m.runs[0].id;
+  const tv = keepValid ? parseT(keepValid).getTime() : null;
+  const covers = r => { const t0 = parseT(r.run).getTime(); return tv >= t0 && tv <= t0 + r.maxHour * 3600e3; };
+  const id = ((tv !== null && m.runs.find(covers)) || m.runs[0]).id;
   $('runSel').value = id;
   syncModelMenus(); hoverUI.sync(); tip.style.display = 'none';
   await openRun(id, keepValid);
