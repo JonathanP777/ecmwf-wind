@@ -15,7 +15,8 @@ precipitation, radar), isobars and a forecast-hour slider. Each model keeps its 
 | `data/` | `index.json` (list of runs) + run folders with images per forecast step and `meta.json`. Generated, not stored in git; uploaded to Cloudflare R2. |
 | `config.js` | `window.DATA_BASE`: where the site loads forecast data from (the R2 public URL). |
 | `r2_sync.py` | `upload`: puts new run folders in the Cloudflare R2 bucket. `publish`: uploads `index.json` last, then deletes runs that rolled off. |
-| `vendor/` | Leaflet map library + Natural Earth coastlines/borders, stored locally. |
+| `lines.js` | "Borders & lines" menu: coastlines, borders, states/provinces, US counties, lakes, rivers, city names, lat/lon grid, basemap opacity/labels. |
+| `vendor/` | Leaflet map library + Natural Earth coastlines/borders, stored locally. `vendor/lines/` = extra line layers (built by `tools/build_lines.sh`). |
 | `screenshot.py` | Opens the site in a hidden browser and saves pictures to `screenshots/`. |
 
 ## How it works (plain language)
@@ -139,6 +140,28 @@ The workflow in `.github/workflows/deploy.yml` runs every hour (at :20), on ever
   against the free 1 million; reads depend on visitors (free 10 million a month).
 - To use another host (e.g. a custom domain on the bucket), change `DATA_BASE` in `config.js`.
 
+## Borders & lines
+
+*Additional Map Settings → Borders, counties, grid & basemap…* opens a sub-menu. Every layer has an
+on/off tick, a colour (picker + 8 presets) and, under ▸, width, opacity and line style (solid / dashed / dotted).
+
+| Layer | Default | File (size, gzip as served) | Notes |
+|---|---|---|---|
+| Coastlines | on | `vendor/coast.geojson` (existing) | |
+| Country borders | on, dashed | `vendor/borders.geojson` (existing) | |
+| States / provinces | on | `vendor/lines/admin1.json` 296 KB (~109 KB) | all countries, Natural Earth 10m, simplified |
+| US counties | off | `vendor/lines/us_counties.json` 239 KB (~96 KB) | loaded only when switched on, drawn from zoom 5 |
+| Lakes | off | `vendor/lines/lakes.json` 86 KB (~27 KB) | outlines of major lakes |
+| Rivers | off | `vendor/lines/rivers.json` 147 KB (~49 KB) | major rivers |
+| City names | off | `vendor/lines/cities.json` 89 KB (~40 KB) | ~3,200 places, more appear as you zoom in; overlapping names are skipped |
+| Lat/lon grid | off, dotted | (computed) | spacing 30° → 0.5° depending on zoom, labels at the edges |
+
+Also: "Draw lines on top of wind particles & barbs" (default off: lines sit above the colour layer
+but under the particles/barbs), basemap opacity (0–100 %), place-name labels on/off (Esri labels;
+OpenStreetMap has its labels built in), *Reset to defaults*, *All lines off*. Saved in the browser
+(localStorage `windLines`). Lines are always below the readout and drawings, and are included in
+the PNG export. Files are only downloaded when their layer is on.
+
 ## Credits / licences
 
 - Forecast data: © ECMWF, open data, licence CC BY 4.0 (attribution required, shown on the map).
@@ -146,7 +169,9 @@ The workflow in `.github/workflows/deploy.yml` runs every hour (at :20), on ever
   (`noaa-hrrr-bdp-pds`, `noaa-rrfs-ops-pds`).
 - Basemap: Esri Dark Gray Canvas (free with attribution); OpenStreetMap selectable.
   (CARTO's free dark basemap now needs an API key, so it isn't used.)
-- Coastlines/borders: Natural Earth (public domain). Map library: Leaflet.
+- Coastlines, borders, states/provinces, lakes, rivers, city names: Natural Earth (public domain).
+  US counties: US Census Bureau cartographic boundary file `cb_2023_us_county_5m` (public domain), simplified.
+  Map library: Leaflet.
 
 ## Known limitations of this prototype
 
@@ -156,7 +181,9 @@ The workflow in `.github/workflows/deploy.yml` runs every hour (at :20), on ever
 - On first start, and after a long outage, the 10 runs per model are rebuilt over a few hourly jobs.
 - Mountain areas show wiggly isobars in HRRR/RRFS (sea-level pressure over high ground is an estimate).
 - Particles pause while you drag/zoom and restart when you stop.
-- Coastline lines don't repeat when you scroll past the date line onto a second copy of the world.
+- Coastline/border lines don't repeat when you scroll past the date line onto a second copy of the world.
+- Border lines are simplified for small files: at street-level zooms (8+) they can be a few hundred metres off.
+- Counties are drawn from zoom 5 (whole-country views would be a solid mesh).
 
 ## Drawing tools
 

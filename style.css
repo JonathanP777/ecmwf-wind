@@ -121,3 +121,40 @@ html,body{margin:0;height:100%;background:#111;font-family:system-ui,-apple-syst
 }
 #amsBody label[hidden]{display:none}
 #modelSel{flex:1}
+
+/* ---- borders & lines sub-menu ---- */
+#linesBody{background:rgba(20,22,28,.94);border-radius:8px;padding:9px 11px;font-size:12px;box-shadow:0 2px 10px rgba(0,0,0,.5);width:300px;max-width:calc(100vw - 40px);max-height:calc(100vh - 120px);overflow-y:auto;box-sizing:border-box}
+#linesBody[hidden]{display:none}
+#linesBody label{cursor:pointer;user-select:none;display:flex;align-items:center;gap:5px}
+.lnHead{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.lnHead b{font-size:13px;flex:1}
+#lnBack,#lnReset,#lnAllOff{background:#2c3e50;color:#fff;border:0;border-radius:4px;padding:4px 9px;cursor:pointer;font-size:12px}
+#lnClose{background:none;border:0;color:#ccc;font-size:15px;cursor:pointer;padding:0 4px}
+#lnBack:hover,#lnReset:hover,#lnAllOff:hover,.lnMore:hover{background:#3d566e}
+.lnHint{color:#9aa4b2;font-size:11px;margin-bottom:4px}
+.ln{border-top:1px solid rgba(255,255,255,.08);padding:3px 0}
+.lnTop{display:flex;align-items:center;gap:6px;min-height:26px}
+.lnName{flex:1;font-weight:600}
+.ln.off .lnName{font-weight:400;color:#bbb}
+.lnNote{color:#ffd166;font-size:10.5px;white-space:nowrap}
+.lnColor{width:28px;height:22px;border:0;padding:0;background:none;cursor:pointer}
+.lnMore{background:#2c3e50;color:#fff;border:0;border-radius:4px;width:24px;height:22px;cursor:pointer;padding:0;font-size:11px}
+.lnOpts{padding:2px 0 4px 20px}
+.lnOpts[hidden]{display:none}
+.lnOpts .srow{grid-template-columns:70px 1fr 46px;margin:3px 0}
+.lnOpts .srow select{font-size:12px;padding:3px}
+.lnPresets{display:flex;gap:5px;margin:2px 0 4px}
+.lnSw{width:18px;height:18px;border-radius:50%;border:1px solid rgba(255,255,255,.35);cursor:pointer;padding:0}
+.lnSw.on{outline:2px solid #8fd3ff;outline-offset:1px}
+.lnAboveRow{margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.15)}
+#linesBody .srow{grid-template-columns:110px 1fr 44px}
+#linesBody .lnOpts .srow{grid-template-columns:70px 1fr 46px}
+.lnSaved{font-size:11px;margin-top:5px}
+@media (max-width:600px){
+  #linesBody{bottom:30px}
+  .lnSw{width:22px;height:22px}
+  .lnMore{width:30px;height:28px}
+  .lnColor{width:34px;height:28px}
+  #linesBody label{min-height:26px}
+  body.lines-open #legend{display:none}
+}

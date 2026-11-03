@@ -93,9 +93,22 @@
         <label><input type="radio" name="hStyle" id="hDetailed" value="detailed"> Detailed <span class="lnote">(extra units, gust/precip period)</span></label>
       </div>
     </div>
+    <div class="amsHead amsDrawHead">Borders &amp; lines</div>
+    <button id="openLines" class="amsBig">▦ Borders, counties, grid &amp; basemap…</button>
     <div class="amsHead amsDrawHead">Drawing</div>
     <button id="openDraw" class="amsBig">✎ Drawing tools…</button>
     <div class="amsFoot"><button id="hReset">Reset these</button><span class="lnote">Saved on this device</span></div>
+  </div>
+  <div id="linesBody" hidden>
+    <div class="lnHead"><button id="lnBack" title="Back to Additional Map Settings">‹ Back</button><b>Borders &amp; lines</b><button id="lnClose" title="Close">✕</button></div>
+    <div class="lnHint">Tick to show; ▸ for width, opacity and line style.</div>
+    <div id="lnList"></div>
+    <label class="lnAboveRow"><input type="checkbox" id="lnAbove"> Draw lines on top of wind particles &amp; barbs</label>
+    <div class="amsSub">Basemap</div>
+    <div class="srow"><label for="lnBm">Basemap opacity</label><input type="range" id="lnBm" min="0" max="1" step="0.05"><output id="oLnBm"></output></div>
+    <label><input type="checkbox" id="lnLabels"> Place-name labels <span id="lnLabelsNote" class="lnote"></span></label>
+    <div class="amsFoot"><button id="lnReset">Reset to defaults</button><button id="lnAllOff" title="Switch every line layer off">All lines off</button></div>
+    <div class="lnote lnSaved">Saved on this device. US counties appear from zoom 5.</div>
   </div>
   <button id="amsBtn" aria-expanded="false" aria-controls="amsBody">Additional Map Settings <span id="amsArrow">▴</span></button>
 </div>
@@ -144,6 +157,7 @@
 <script src="vendor/leaflet-geoman.min.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
+<script src="lines.js"></script>
 <script src="draw.js"></script>
 </body>
 </html>

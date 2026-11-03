@@ -66,18 +66,16 @@ map.createPane('barbs'); map.getPane('barbs').style.zIndex = 430;
 map.createPane('isobars'); map.getPane('isobars').style.zIndex = 425; map.getPane('isobars').style.pointerEvents = 'none';
 map.createPane('labels'); map.getPane('labels').style.zIndex = 440; map.getPane('labels').style.pointerEvents = 'none';
 map.createPane('coast'); map.getPane('coast').style.zIndex = 400; map.getPane('coast').style.pointerEvents = 'none';
-const dataAttrib = 'Coastlines: Natural Earth';
+const dataAttrib = 'Borders: Natural Earth';
 const esriAttrib = 'Basemap &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors';
+const darkRef = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', { maxZoom: 16, pane: 'labels', crossOrigin: 'anonymous' });
 const dark = L.layerGroup([
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', { attribution: esriAttrib + ' | ' + dataAttrib, maxZoom: 16, crossOrigin: 'anonymous' }),
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', { maxZoom: 16, pane: 'labels', crossOrigin: 'anonymous' })
+  darkRef
 ]).addTo(map);
 const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | ' + dataAttrib, maxZoom: 19, crossOrigin: 'anonymous' });
 L.control.layers({ 'Dark (Esri)': dark, 'OpenStreetMap': osm }, null, { position: window.innerWidth < 600 ? 'topleft' : 'topright' }).addTo(map);
-// coastlines + borders drawn above the colour shading so land/sea stay readable
-const coastRenderer = L.canvas({ pane: 'coast', padding: 0.3 });
-fetch('vendor/coast.geojson').then(r => r.json()).then(g => L.geoJSON(g, { renderer: coastRenderer, interactive: false, style: { color: '#e8e8e8', weight: 1, opacity: 0.75 } }).addTo(map));
-fetch('vendor/borders.geojson').then(r => r.json()).then(g => L.geoJSON(g, { renderer: coastRenderer, interactive: false, style: { color: '#bbbbbb', weight: 0.7, opacity: 0.55, dashArray: '3 3' } }).addTo(map));
+// coastlines, borders, counties, grid etc. are drawn by lines.js in the 'coast' pane (above the colour shading)
 
 // ---------- canvas layers ----------
 function makeCanvas(pane) { return L.DomUtil.create('canvas', 'wind-canvas', map.getPane(pane)); }
@@ -643,10 +641,12 @@ const hoverUI = (function () {
   const btn = $('amsBtn'), body = $('amsBody');
   function setOpen(open) { body.hidden = !open; btn.setAttribute('aria-expanded', open); $('amsArrow').textContent = open ? '▾' : '▴'; }
   btn.onclick = () => {
+    const lb = $('linesBody');
+    if (lb && !lb.hidden) { lb.hidden = true; setOpen(false); return; }   // "Borders & lines" sub-menu open -> close everything
     const open = body.hidden; setOpen(open);
     if (open && !$('settings').hidden) $('settingsBtn').click();   // only one panel open at a time (they overlap on short screens)
   };
-  $('settingsBtn').addEventListener('click', () => setTimeout(() => { if (!$('settings').hidden) setOpen(false); }, 0));
+  $('settingsBtn').addEventListener('click', () => setTimeout(() => { if (!$('settings').hidden) { setOpen(false); const lb = $('linesBody'); if (lb) lb.hidden = true; } }, 0));
   const boxes = { hoverOn: 'hOn', hvSpeed: 'hSpeed', hvDir: 'hDir', hvGust: 'hGust', hvTemp: 'hTemp', hvPres: 'hPres', hvPcp: 'hPcp', hvPcpTot: 'hPcpTot', hvRefl: 'hRefl', hvCoord: 'hCoord' };
   function sync() {
     const auto = autoVars();
@@ -676,7 +676,7 @@ const hoverUI = (function () {
   ['hCompact', 'hDetailed'].forEach(id => $(id).addEventListener('change', () => { settings.hoverStyle = $(id).value; saveSettings(); sync(); }));
   $('hReset').onclick = () => { HOVER_KEYS.forEach(k => settings[k] = DEFAULTS[k]); saveSettings(); sync(); tip.style.display = 'none'; };
   sync();
-  return { sync };
+  return { sync, setOpen };
 })();
 
 // ---------- legend ----------
@@ -828,7 +828,7 @@ fetch(DATA_BASE + 'index.json', { cache: 'no-cache' }).then(r => r.json()).then(
   await setModel(want, null);
   loop();
 });
-window._app = { map, settings, osm, get modelName() { return MODEL ? MODEL.name : 'ECMWF'; }, get modelKey() { return MODEL ? MODEL.key : 'ifs'; },
+window._app = { map, settings, osm, dark, darkRef, hoverUI, get modelName() { return MODEL ? MODEL.name : 'ECMWF'; }, get modelKey() { return MODEL ? MODEL.key : 'ifs'; },
   get dataCredit() { return minfo().credit; } };   // shared with draw.js
 window._windDebug = { map, sample, sampleGust, sampleTemp, samplePres, samplePcp, sampleRefl, settings, openRun,
   get stepIdx() { return stepIdx; }, get field() { return field; }, get meta() { return meta; }, get index() { return INDEX; }, get model() { return MODEL; }, setModel };
