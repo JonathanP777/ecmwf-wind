@@ -13,8 +13,9 @@
 <div id="map"></div>
 
 <div id="panel">
-  <div class="titlerow"><div class="title">ECMWF IFS forecast</div>
+  <div class="titlerow"><div class="title" id="modelTitle">ECMWF forecast</div>
     <button id="settingsBtn" aria-expanded="false" aria-controls="settings" title="Settings">⚙ Settings ▾</button></div>
+  <div class="row"><label for="modelSel">Model</label><select id="modelSel" title="Forecast model"></select></div>
   <div class="row"><label for="runSel">Run</label><select id="runSel" title="Model run"></select></div>
   <div id="runinfo">Loading…</div>
   <div id="runNote"></div>

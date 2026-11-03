@@ -384,7 +384,7 @@ function download(blob, name) {
 }
 function stamp() {
   const run = $('runSel').value || 'run', h = ($('stepLabel').textContent || '').replace(/[^0-9]/g, '');
-  return 'ecmwf_' + run + '_f' + h.padStart(3, '0');
+  const mk = window._app.modelKey; return 'ecmwf_' + (mk && mk !== 'ifs' ? mk + '_' : '') + run + '_f' + h.padStart(3, '0');
 }
 $('dExport').onclick = () => download(new Blob([JSON.stringify(JSON.parse(serialize()), null, 1)], { type: 'application/geo+json' }), stamp() + '_drawings.geojson');
 $('dImport').onclick = () => $('dFile').click();
@@ -477,7 +477,7 @@ async function renderPNG(withTiles) {
   }
   // caption: model run, valid time, layer
   const shadeTxt = settings.shade === 'off' ? 'Wind (particles/barbs)' : $('legendTitle').textContent;
-  const l1 = 'ECMWF IFS · ' + $('validtime').textContent + ' (' + $('stepLabel').textContent + ')';
+  const l1 = window._app.modelName + ' · ' + $('validtime').textContent + ' (' + $('stepLabel').textContent + ')';
   const l2 = $('runinfo').textContent.replace(/ · .*$/, '').replace('(latest)', '').trim() + ' · ' + shadeTxt + (settings.isobars ? ' · MSLP isobars (hPa)' : '');
   ctx.font = '600 14px system-ui, sans-serif'; const w1 = ctx.measureText(l1).width;
   ctx.font = '12px system-ui, sans-serif'; const w2 = ctx.measureText(l2).width;

@@ -31,7 +31,7 @@ jobs:
         run: pip install -r requirements.txt
       - name: Check ecCodes
         run: python -c "import eccodes; print('ecCodes', eccodes.codes_get_api_version())"
-      # Which 5 ECMWF runs should the site show? (newest complete runs)
+      # Which runs should the site show? (5 newest complete IFS runs, 2 newest AIFS runs)
       - name: Plan runs
         id: plan
         run: python update_data.py plan
@@ -52,9 +52,17 @@ jobs:
       - uses: actions/cache/restore@v4
         id: r5
         with: { path: 'cache/${{ steps.plan.outputs.run5 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run5 }}' }
+      # AIFS (AI model): the 2 newest runs, cached the same way (cache/aifs-<run id>)
+      - uses: actions/cache/restore@v4
+        id: a1
+        with: { path: 'cache/${{ steps.plan.outputs.aifs1 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.aifs1 }}' }
+      - uses: actions/cache/restore@v4
+        id: a2
+        with: { path: 'cache/${{ steps.plan.outputs.aifs2 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.aifs2 }}' }
       - name: Download new ECMWF runs and assemble site data
         env:
           RUNS: ${{ steps.plan.outputs.runs }}
+          AIFS_RUNS: ${{ steps.plan.outputs.aifs_runs }}
         run: |
           for i in 1 2 3; do python update_data.py build && break; echo "retrying in 60s"; sleep 60; done
           test -f data/index.json
@@ -74,6 +82,12 @@ jobs:
       - uses: actions/cache/save@v4
         if: always() && steps.r5.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.run5 }}/DONE') != ''
         with: { path: 'cache/${{ steps.plan.outputs.run5 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.run5 }}' }
+      - uses: actions/cache/save@v4
+        if: always() && steps.a1.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.aifs1 }}/DONE') != ''
+        with: { path: 'cache/${{ steps.plan.outputs.aifs1 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.aifs1 }}' }
+      - uses: actions/cache/save@v4
+        if: always() && steps.a2.outputs.cache-hit != 'true' && hashFiles('cache/${{ steps.plan.outputs.aifs2 }}/DONE') != ''
+        with: { path: 'cache/${{ steps.plan.outputs.aifs2 }}', key: 'ecmwf-v3-${{ steps.plan.outputs.aifs2 }}' }
       - name: Assemble site
         run: |
           mkdir -p _site

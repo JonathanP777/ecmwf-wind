@@ -3,6 +3,15 @@
 'use strict';
 const MS2KT = 1.943844;
 let INDEX = null, meta = null, field = null, stepIdx = 0;
+// ---------- models ----------
+// What each model offers comes from data/index.json ("models": gust yes/no, precip periods, runs, data path).
+// MODEL_INFO only adds wording for the menus. To add a model: add it in update_data.py MODELS (+ a line here).
+const MODEL_INFO = {
+  ifs:  { short: 'IFS',  label: 'ECMWF IFS (physics model)', title: 'ECMWF IFS forecast', stepTxt: '3-hourly' },
+  aifs: { short: 'AIFS', label: 'ECMWF AIFS (AI model)',     title: 'ECMWF AIFS forecast', stepTxt: '6-hourly' }
+};
+let MODEL = null;   // current entry of INDEX.models
+function minfo(m) { m = m || MODEL; return MODEL_INFO[m.key] || { short: m.name, label: m.name, title: m.name + ' forecast', stepTxt: '' }; }
 const cache = new Map();   // "run:step" -> decoded step (small LRU so long scrubbing doesn't eat memory)
 const CACHE_MAX = 10;
 const $ = id => document.getElementById(id);
@@ -78,7 +87,7 @@ function fitCanvas(c, ratio) {
 // Each forecast step = PNG images whose colour channels hold 8-bit scaled values:
 //   wind_XXX.png: R=u, G=v, B=gust   met_XXX.png: R=2 m temp, G=MSL pressure, B=precip since run start
 //   pcp_XXX.png:  R/G/B = precip in previous 3 h / 6 h / 24 h  (loaded only when the precip layer is on)
-function runBase() { return 'data/runs/' + meta.id + '/'; }
+function runBase() { return MODEL.path + meta.id + '/'; }
 function bust() { return '?v=' + encodeURIComponent(meta.generated + meta.res); }
 function loadImg(src) {
   return new Promise((res, rej) => {
@@ -95,7 +104,7 @@ function loadImg(src) {
 function cacheGet(k) { if (!cache.has(k)) return null; const f = cache.get(k); cache.delete(k); cache.set(k, f); return f; }
 function cachePut(k, f) { cache.set(k, f); while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value); }
 async function loadStep(i) {
-  const key = meta.id + ':' + meta.res + ':' + i;
+  const key = MODEL.key + ':' + meta.id + ':' + meta.res + ':' + i;
   const hit = cacheGet(key); if (hit) return hit;
   const st = meta.steps[i], n = String(st.hour).padStart(3, '0');
   const [w, m] = await Promise.all([loadImg(runBase() + 'wind_' + n + '.png' + bust()), loadImg(runBase() + 'met_' + n + '.png' + bust())]);
@@ -154,7 +163,11 @@ function samplePcp(lat, lon, period) {
   const c = cell(lat, lon); return c ? sq(bil(field.pcp, c, ch), mx) : null;
 }
 // precip period actually shown at this step (falls back when the chosen one isn't available)
-function pcpAvail(p, st) { return p === 'total' ? st.hour > 0 : st[PCH[p][1]] != null; }
+function pcpAvail(p, st) { if (MODEL && !MODEL.pcp.includes(p)) return false; return p === 'total' ? st.hour > 0 : st[PCH[p][1]] != null; }
+// colour layer actually shown: a layer the current model lacks (e.g. gust in AIFS) falls back to wind speed
+// (the saved choice is kept, so switching back to a model that has it brings it back)
+function hasGust() { return !MODEL || MODEL.gust; }
+function effShade() { return settings.shade === 'gust' && !hasGust() ? 'speed' : settings.shade; }
 function effPeriod() {
   const st = meta && meta.steps[stepIdx]; if (!st) return settings.precipPeriod;
   const want = settings.precipPeriod;
@@ -202,7 +215,7 @@ function pIndex(mm, thr) {  // -1 = transparent
 function drawShade() {
   fitCanvas(shadeCv, 1);
   const ctx = shadeCv.getContext('2d'); ctx.clearRect(0, 0, shadeCv.width, shadeCv.height);
-  const mode = settings.shade;
+  const mode = effShade();
   if (!field || mode === 'off') return;
   if (mode === 'gust' && field.st.gMax === undefined) return;
   let period = null, thr = null;
@@ -428,26 +441,47 @@ $('play').onclick = function () {
 $('slider').oninput = e => setStep(+e.target.value);
 
 // precip period menu + notes
+// menu entries the current model doesn't have are greyed out with a short reason
+const PCP_LABELS = { '1': '1 h total', '3': '3 h total', '6': '6 h total', '24': '24 h total', total: 'Total since run start' };
+function syncModelMenus() {
+  const mi = minfo(), sh = $('shadeSel'), ps = $('pcpSel');
+  for (const o of sh.options) if (o.value === 'gust') {
+    o.disabled = !hasGust(); o.textContent = hasGust() ? 'Wind gust' : 'Wind gust (not in ' + mi.short + ')';
+  }
+  sh.value = effShade();
+  for (const o of ps.options) {
+    const has = o.value !== '1' && (!MODEL || MODEL.pcp.includes(o.value));
+    o.textContent = PCP_LABELS[o.value] + (has ? '' : o.value === '1' ? ' (not available: ' + (MODEL && MODEL.key !== 'ifs' ? mi.short + ' is ' + mi.stepTxt : 'ECMWF free data is 3-hourly') + ')'
+      : ' (not in ' + mi.short + ': ' + mi.stepTxt + ' data)');
+    if (!has) o.disabled = true;
+  }
+}
 function updateNotes() {
   const st = meta && meta.steps[stepIdx], n = $('shadeNote'), sel = $('pcpSel');
-  sel.parentElement.style.display = settings.shade === 'precip' ? '' : 'none';
+  const shade = effShade(), mi = minfo();
+  sel.parentElement.style.display = shade === 'precip' ? '' : 'none';
   if (!st) return;
+  syncModelMenus();
   for (const o of sel.options) if (o.value !== '1') o.disabled = !pcpAvail(o.value, st);
   let txt = '';
-  if (settings.shade === 'gust') txt = st.gustPeriod ? 'max gust in previous ' + st.gustPeriod + ' h' : 'no gust at +0h (starts +3h)';
-  else if (settings.shade === 'precip') {
+  if (settings.shade === 'gust' && !hasGust()) txt = mi.short + ' has no gust data: showing wind speed';
+  else if (shade === 'gust') txt = st.gustPeriod ? 'max gust in previous ' + st.gustPeriod + ' h' : 'no gust at +0h (starts +3h)';
+  else if (shade === 'precip') {
     const p = effPeriod(), want = settings.precipPeriod;
+    // show the period actually used when the saved one doesn't exist in this model (saved choice is kept)
+    sel.value = MODEL.pcp.includes(want) ? want : (p || MODEL.pcp[0]);
     if (!p) txt = st.hour === 0 ? 'no precipitation at +0h' : want + ' h totals not available at this step';
     else {
       txt = p === 'total' ? 'total since run start (' + st.hour + ' h)' : p + ' h total, ending at valid time';
-      if (p !== want) txt += want === '3' ? ' (3 h only to +144h)' : want === '24' ? ' (24 h starts at +24h)' : ' (6 h starts at +6h)';
+      if (p !== want) txt += !MODEL.pcp.includes(want) ? ' (' + mi.short + ' has ' + mi.stepTxt + ' data: no ' + want + ' h totals)'
+        : want === '3' ? ' (3 h only to +144h)' : want === '24' ? ' (24 h starts at +24h)' : ' (6 h starts at +6h)';
     }
   }
   n.textContent = txt;
   drawLegend();
 }
 $('shadeSel').value = settings.shade; $('pcpSel').value = settings.precipPeriod;
-$('shadeSel').onchange = e => { settings.shade = e.target.value; saveSettings(); drawShade(); updateNotes(); };
+$('shadeSel').onchange = e => { if (e.target.value === 'gust' && !hasGust()) { e.target.value = effShade(); return; } settings.shade = e.target.value; saveSettings(); drawShade(); updateNotes(); };
 $('pcpSel').onchange = e => { if (e.target.value === '1') { e.target.value = settings.precipPeriod; return; } settings.precipPeriod = e.target.value; saveSettings(); drawShade(); updateNotes(); };
 [['tParticles', 'particles'], ['tBarbs', 'barbs'], ['tIsobars', 'isobars']].forEach(([id, k]) => {
   $(id).checked = settings[k];
@@ -472,7 +506,7 @@ function fmtCoord(la, lo) {
 function autoVars() {
   const a = new Set();
   if (!settings.hoverAuto) return a;
-  const sh = settings.shade;
+  const sh = effShade();
   if (sh === 'speed' || sh === 'off') { a.add('hvSpeed'); a.add('hvDir'); }
   if (sh === 'gust') a.add('hvGust');
   if (sh === 'temp') a.add('hvTemp');
@@ -480,7 +514,9 @@ function autoVars() {
   if (settings.isobars) a.add('hvPres');
   return a;
 }
-function shown(k) { return settings[k] || autoVars().has(k); }
+// only variables the current model has (AIFS: no gust)
+function modelHas(k) { return k !== 'hvGust' || hasGust(); }
+function shown(k) { return modelHas(k) && (settings[k] || autoVars().has(k)); }
 function readoutRows(la, lo) {
   const p = sample(la, lo);
   if (!p) return null;
@@ -555,6 +591,7 @@ const hoverUI = (function () {
       const el = $(boxes[k]), lab = el.parentElement, on = auto.has(k);
       lab.classList.toggle('auto', on);
       if (on) { el.checked = true; el.disabled = true; }
+      lab.hidden = !modelHas(k);   // e.g. no "Gust" row for AIFS
     }
     $('amsSubVars').textContent = settings.hoverAuto ? 'Also show these (items tagged auto are shown automatically for current layer)' : 'Show these values';
   }
@@ -577,7 +614,7 @@ function drawLegend() {
   const c = $('legendBar'), ctx = c.getContext('2d'), ticks = $('legendTicks'), W = c.width;
   ctx.clearRect(0, 0, W, c.height); ticks.innerHTML = '';
   const tick = (x, t) => { const s = document.createElement('span'); s.style.left = x + 'px'; s.textContent = t; ticks.appendChild(s); };
-  const mode = settings.shade;
+  const mode = effShade();
   $('legend').style.display = mode === 'off' ? 'none' : '';
   if (mode === 'speed' || mode === 'gust') {
     for (let x = 0; x < W; x++) { const k = Math.round(x / (W - 1) * 100); ctx.fillStyle = `rgb(${LUT[k*3]},${LUT[k*3+1]},${LUT[k*3+2]})`; ctx.fillRect(x, 0, 1, c.height); }
@@ -629,19 +666,19 @@ function drawLegend() {
   }
   $('sReset').onclick = () => {
     Object.assign(settings, DEFAULTS); sync(); saveSettings(); hoverUI.sync();
-    $('shadeSel').value = settings.shade; $('pcpSel').value = settings.precipPeriod;
+    $('shadeSel').value = effShade(); $('pcpSel').value = settings.precipPeriod;
     $('tParticles').checked = settings.particles; $('tBarbs').checked = settings.barbs; $('tIsobars').checked = settings.isobars;
     if (meta) { resetParticles(); redrawStatic(); updateNotes(); } else drawLegend();
   };
   sync();
 })();
 
-// ---------- model runs ----------
+// ---------- models & runs ----------
 async function openRun(id, keepValid) {
-  const entry = INDEX.runs.find(r => r.id === id);
-  const m = await fetch('data/runs/' + id + '/meta.json', { cache: 'no-cache' }).then(r => r.json());
+  const entry = MODEL.runs.find(r => r.id === id);
+  const m = await fetch(MODEL.path + id + '/meta.json', { cache: 'no-cache' }).then(r => r.json());
   meta = m; field = null;
-  const latest = INDEX.runs[0].id === id;
+  const latest = MODEL.runs[0].id === id;
   $('runinfo').textContent = 'Model run ' + fmtTime(m.run) + (latest ? ' (latest)' : '') + ' · ' + m.res + '° grid';
   const s = $('slider'); s.max = m.steps.length - 1;
   let idx = 0, note = '';
@@ -650,8 +687,10 @@ async function openRun(id, keepValid) {
     let best = 0, bd = Infinity;
     m.steps.forEach((st, k) => { const dd = Math.abs(parseT(st.valid).getTime() - tv); if (dd < bd) { bd = dd; best = k; } });
     idx = best;
+    const t0 = parseT(m.steps[0].valid).getTime(), t1 = parseT(m.steps[m.steps.length - 1].valid).getTime();
     if (bd === 0) note = 'Same valid time, +' + m.steps[idx].hour + 'h in this run';
-    else note = 'That valid time is outside this run (to +' + entry.maxHour + 'h): showing nearest step';
+    else if (tv > t0 && tv < t1) note = 'No step at that exact time here (' + minfo().stepTxt + '): showing nearest, +' + m.steps[idx].hour + 'h';
+    else note = 'That valid time is outside this run (+0 to +' + entry.maxHour + 'h): showing nearest step';
   }
   $('runNote').textContent = note;
   s.value = idx;
@@ -662,21 +701,46 @@ $('runSel').onchange = e => {
   const keep = meta ? meta.steps[stepIdx].valid : null;
   openRun(e.target.value, keep);
 };
-
-// ---------- start ----------
-fetch('data/index.json', { cache: 'no-cache' }).then(r => r.json()).then(async ix => {
-  INDEX = ix;
-  const sel = $('runSel');
-  ix.runs.forEach((r, k) => {
+function fillRuns() {
+  const sel = $('runSel'); sel.innerHTML = '';
+  MODEL.runs.forEach((r, k) => {
     const o = document.createElement('option'); o.value = r.id;
     o.textContent = runLabel(r.run) + ' · to +' + r.maxHour + 'h' + (k === 0 ? ' (latest)' : '');
     sel.appendChild(o);
   });
+}
+// switch model; keeps the valid time on screen (same run time if the new model has it, else its latest run)
+async function setModel(key, keepValid) {
+  const m = INDEX.models.find(x => x.key === key && x.runs.length) || INDEX.models[0];
+  const prevRun = meta && meta.run;
+  MODEL = m; $('modelSel').value = m.key;
+  try { localStorage.setItem('windModel', m.key); } catch (e) {}
+  $('modelTitle').textContent = minfo().title;
+  fillRuns();
+  const same = prevRun && m.runs.find(r => r.run === prevRun);
+  const id = same ? same.id : m.runs[0].id;
+  $('runSel').value = id;
+  syncModelMenus(); hoverUI.sync(); tip.style.display = 'none';
+  await openRun(id, keepValid);
+}
+$('modelSel').onchange = e => setModel(e.target.value, meta ? meta.steps[stepIdx].valid : null);
+
+// ---------- start ----------
+fetch('data/index.json', { cache: 'no-cache' }).then(r => r.json()).then(async ix => {
+  // older index.json (IFS only) had just "runs"
+  if (!ix.models) ix.models = [{ key: 'ifs', name: 'ECMWF IFS', path: 'data/runs/', gust: true, pcp: ['3', '6', '24', 'total'], runs: ix.runs }];
+  ix.models = ix.models.filter(m => m.runs && m.runs.length);
+  INDEX = ix;
+  const ms = $('modelSel');
+  ix.models.forEach(m => { const o = document.createElement('option'); o.value = m.key; o.textContent = minfo(m).label; ms.appendChild(o); });
+  ms.parentElement.style.display = ix.models.length > 1 ? '' : 'none';
+  let want = 'ifs';
+  try { want = new URLSearchParams(location.search).get('model') || localStorage.getItem('windModel') || 'ifs'; } catch (e) {}
   drawLegend();
-  await openRun(ix.runs[0].id, null);
+  await setModel(want, null);
   loop();
 });
-window._app = { map, settings, osm };   // shared with draw.js
+window._app = { map, settings, osm, get modelName() { return MODEL ? MODEL.name : 'ECMWF'; }, get modelKey() { return MODEL ? MODEL.key : 'ifs'; } };   // shared with draw.js
 window._windDebug = { map, sample, sampleGust, sampleTemp, samplePres, samplePcp, settings, openRun,
-  get stepIdx() { return stepIdx; }, get field() { return field; }, get meta() { return meta; }, get index() { return INDEX; } };
+  get stepIdx() { return stepIdx; }, get field() { return field; }, get meta() { return meta; }, get index() { return INDEX; }, get model() { return MODEL; }, setModel };
 })();

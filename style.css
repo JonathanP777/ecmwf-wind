@@ -9,7 +9,7 @@ html,body{margin:0;height:100%;background:#111;font-family:system-ui,-apple-syst
 #slider{flex:1}
 #play{background:#2c3e50;color:#fff;border:0;border-radius:4px;width:32px;height:26px;cursor:pointer}
 #stepLabel{min-width:42px;text-align:right;font-variant-numeric:tabular-nums}
-#runSel,#pcpSel{background:#2c3e50;color:#fff;border:0;border-radius:4px;padding:3px 4px;font-size:12px}
+#modelSel,#runSel,#pcpSel{background:#2c3e50;color:#fff;border:0;border-radius:4px;padding:3px 4px;font-size:12px}
 #runSel{flex:1}
 #pcpSel{max-width:150px}
 .pcpwrap{display:inline-block}
@@ -119,3 +119,5 @@ html,body{margin:0;height:100%;background:#111;font-family:system-ui,-apple-syst
   .dbActs button,#dFlip{padding:7px 8px}
   body.drawing #legend{display:none}
 }
+#amsBody label[hidden]{display:none}
+#modelSel{flex:1}

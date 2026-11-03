@@ -117,3 +117,19 @@ Open **Additional Map Settings → Drawing tools** (bottom left). You can use:
 **Select** lets you move or edit a drawing. Press **Esc**, or click the active tool again, to go back to panning the map.
 
 Drawings are saved in your browser. You can export them as a GeoJSON file and import them again. **Save image (PNG)** downloads the current view with a caption showing the model run, valid time and layer. Drawing uses [Leaflet-Geoman](https://github.com/geoman-io/leaflet-geoman) (MIT), stored locally in `vendor/`.
+
+## Models (IFS and AIFS)
+
+Use the **Model** menu to switch between:
+- **ECMWF IFS**, ECMWF's main physics model. The site keeps its 5 newest runs. Data is 3-hourly up to +144 h.
+- **ECMWF AIFS**, ECMWF's AI model ([aifs-single](https://www.ecmwf.int/en/forecasts/dataset/aifs-machine-learning-data)). The site keeps its 2 newest runs. Every run goes to +360 h in 6-hourly steps. AIFS has no wind-gust data and no 1 h or 3 h precipitation totals, so those menu items are greyed out.
+
+Each model's menus only offer what that model has. When you switch models, the map tries to stay on the same valid time. The site also remembers the last model you picked. A link with `?model=aifs` opens the AIFS model directly.
+
+Data layout (made by `update_data.py`):
+- `data/index.json` keeps `generated` and `runs` (the IFS runs), the same as before. It also adds `models`, with one entry per model: `key`, `name`, `path`, `gust`, `pcp` and `runs`.
+- IFS run folders are `data/runs/<run id>/` (unchanged).
+- AIFS run folders are `data/aifs/runs/<run id>/`.
+- In each model, the newest run is at 0.25° and the older runs are at 0.5°.
+
+If the AIFS download fails, the IFS part of the site still updates. To add another model, add an entry to `MODELS` in `update_data.py` and to `MODEL_INFO` in `app.js`.
