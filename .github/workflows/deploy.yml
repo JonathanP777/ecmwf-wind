@@ -33,9 +33,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: [ifs, aifs, hrrr, rrfs]
+        model: [ifs, aifs, hrrr, rrfs, ens]
     env:
-      BUILD_BUDGET_MIN: '35'     # stop starting new runs after 35 min; the rest are built by the next job
+      # ENS fetches 50 members per step, so it gets a longer budget; others stay at 35 min.
+      BUILD_BUDGET_MIN: "${{ matrix.model == 'ens' && '50' || '35' }}"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -15,7 +15,9 @@ const MODEL_INFO = {
   hrrr: { short: 'HRRR', label: 'NOAA HRRR (3 km, US)',        title: 'NOAA HRRR forecast',  stepTxt: 'hourly', credit: NOAA_CREDIT + ' (HRRR)',
           link: 'https://registry.opendata.aws/noaa-hrrr-pds/' },
   rrfs: { short: 'RRFS', label: 'NOAA RRFS (3 km, US)',        title: 'NOAA RRFS forecast',  stepTxt: 'hourly', credit: NOAA_CREDIT + ' (RRFS)',
-          link: 'https://registry.opendata.aws/noaa-rrfs-ops/' }
+          link: 'https://registry.opendata.aws/noaa-rrfs-ops/' },
+  ens:  { short: 'ENS',  label: 'ECMWF ENS (global, ensemble)', title: 'ECMWF Ensemble forecast', stepTxt: '3-hourly', credit: ECMWF_CREDIT,
+          link: 'https://www.ecmwf.int/en/forecasts/datasets/open-data' }
 };
 let MODEL = null;   // current entry of INDEX.models
 function minfo(m) { m = m || MODEL; return MODEL_INFO[m.key] || { short: m.name, label: m.name, title: m.name + ' forecast', stepTxt: '' }; }
@@ -25,7 +27,7 @@ const $ = id => document.getElementById(id);
 
 // ---------- user settings (saved in localStorage) ----------
 const DEFAULTS = { units: 'kt', tempUnit: 'F', precipUnit: 'in', shade: 'speed', precipPeriod: '3',
-  speed: 0.4, width: 1.0, trail: 6, density: 1.0, particles: true, barbs: true, isobars: false,
+  speed: 0.4, width: 1.0, trail: 6, density: 1.0, particles: true, barbs: true, isobars: false, ensIso: true,
   // pinpoint readout options ("Additional Map Settings" menu)
   // hoverAuto: show the variable(s) matching the displayed layer; hv* = extra (or, with auto off, the full manual set)
   hoverOn: true, hoverAuto: true, hoverStyle: 'compact', hvSpeed: false, hvDir: false, hvGust: false, hvTemp: false,
@@ -42,7 +44,7 @@ try {
   const saved = JSON.parse(localStorage.getItem('windSettings') || '{}');
   for (const k in DEFAULTS) if (k in saved && typeof saved[k] === typeof DEFAULTS[k]) settings[k] = saved[k];
   if (!UNITS[settings.units]) settings.units = DEFAULTS.units;
-  if (!['speed', 'gust', 'temp', 'precip', 'refl', 'off'].includes(settings.shade)) settings.shade = DEFAULTS.shade;
+  if (!['speed', 'gust', 'temp', 'precip', 'refl', 'mslmin', 'mslmean', 'mslmax', 'off'].includes(settings.shade)) settings.shade = DEFAULTS.shade;
   if (!['1', '3', '6', '24', 'total'].includes(settings.precipPeriod)) settings.precipPeriod = DEFAULTS.precipPeriod;
   if (!['F', 'C'].includes(settings.tempUnit)) settings.tempUnit = 'F';
   if (!['in', 'mm'].includes(settings.precipUnit)) settings.precipUnit = 'in';
@@ -117,10 +119,15 @@ function cachePut(k, f) { cache.set(k, f); while (cache.size > CACHE_MAX) cache.
 async function loadStep(i) {
   const key = MODEL.key + ':' + meta.id + ':' + meta.res + ':' + i;
   const hit = cacheGet(key); if (hit) return hit;
-  const st = meta.steps[i], n = String(st.hour).padStart(3, '0');
-  const [w, m] = await Promise.all([loadImg(runBase() + 'wind_' + n + '.png' + bust()), loadImg(runBase() + 'met_' + n + '.png' + bust())]);
+  const st = meta.steps[i], n = String(st.hour).padStart(3, '0'), base = runBase(), bq = bust();
   // base + cache-buster are kept with the step so a late extra layer load still reads this run's folder
-  const f = { key, st, w: w.w, h: w.h, wind: w.px, met: m.px, pcp: null, rad: null, iso: null, base: runBase(), bq: bust() };
+  if (isEns()) {
+    const e = await loadImg(base + 'ens_' + n + '.png' + bq);
+    const f = { key, st, w: e.w, h: e.h, ens: e.px, wind: null, met: null, pcp: null, rad: null, iso: null, isoAll: null, base, bq };
+    cachePut(key, f); return f;
+  }
+  const [w, m] = await Promise.all([loadImg(base + 'wind_' + n + '.png' + bq), loadImg(base + 'met_' + n + '.png' + bq)]);
+  const f = { key, st, w: w.w, h: w.h, wind: w.px, met: m.px, pcp: null, rad: null, iso: null, base, bq };
   cachePut(key, f); return f;
 }
 async function loadPcp(f) {
@@ -133,18 +140,26 @@ function loadRad(f) {
   const n = String(f.st.hour).padStart(3, '0');
   return f._radP || (f._radP = loadImg(f.base + 'rad_' + n + '.png' + f.bq).then(r => { f.rad = r.px; return f; }, e => { f._radP = null; throw e; }));
 }
-async function loadIso(f) {
-  if (f.iso) return f;
-  const n = String(f.st.hour).padStart(3, '0');
-  const j = await fetch(f.base + 'isobars_' + n + '.json' + f.bq).then(r => r.json());
+function decodeIso(j) {
   // decode delta-encoded integer tenths of a degree
-  j.lines.forEach(l => {
+  (j.lines || []).forEach(l => {
     const d = l.d, pts = new Float32Array(d.length); let x = 0, y = 0, x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
     for (let k = 0; k < d.length; k += 2) { x += d[k]; y += d[k + 1]; pts[k] = x / 10; pts[k + 1] = y / 10;
       x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
     l.pts = pts; l.bb = [x0 / 10, y0 / 10, x1 / 10, y1 / 10]; delete l.d;
   });
-  f.iso = j; return f;
+  return j;
+}
+function isoKind() { return ({ mslmin: 'min', mslmean: 'mean', mslmax: 'max' })[effShade()] || 'min'; }
+function pickIso(f) { if (f && f.isoAll) f.iso = f.isoAll[isoKind()] || f.isoAll.min; }
+async function loadIso(f) {
+  if (f.isoAll) { pickIso(f); return f; }
+  if (f.iso) return f;
+  const n = String(f.st.hour).padStart(3, '0');
+  const j = await fetch(f.base + 'isobars_' + n + '.json' + f.bq).then(r => r.json());
+  if (j.min) { f.isoAll = { min: decodeIso(j.min), mean: decodeIso(j.mean || j.min), max: decodeIso(j.max || j.min) }; pickIso(f); }
+  else f.iso = decodeIso(j);
+  return f;
 }
 
 // ---------- field sampling (bilinear on the 8-bit values) ----------
@@ -167,7 +182,7 @@ const lin = (b, lo, hi) => lo + b / 255 * (hi - lo);
 const sq = (b, mx) => { const t = b / 255; return t * t * mx; };
 // wind [u,v] m/s or null
 function sample(lat, lon) {
-  const c = cell(lat, lon); if (!c) return null; const s = field.st;
+  const c = cell(lat, lon); if (!c || !field.wind) return null; const s = field.st;
   return [lin(bil(field.wind, c, 0), s.uMin, s.uMax), lin(bil(field.wind, c, 1), s.vMin, s.vMax)];
 }
 function sampleGust(lat, lon) {
@@ -175,7 +190,15 @@ function sampleGust(lat, lon) {
   const c = cell(lat, lon); return c ? lin(bil(field.wind, c, 2), s.gMin, s.gMax) : null;
 }
 function sampleTemp(lat, lon) { const c = cell(lat, lon); return c ? lin(bil(field.met, c, 0), field.st.tMin, field.st.tMax) : null; }
-function samplePres(lat, lon) { const c = cell(lat, lon); return c ? lin(bil(field.met, c, 1), field.st.pMin, field.st.pMax) : null; }
+function sampleEns(lat, lon, ch) {
+  const c = cell(lat, lon); if (!c || !field.ens) return null;
+  const lo = field.st.pLo != null ? field.st.pLo : 870, hi = field.st.pHi != null ? field.st.pHi : 1080;
+  return lin(bil(field.ens, c, ch), lo, hi);
+}
+function samplePres(lat, lon) {
+  if (isEns()) return sampleEns(lat, lon, ({ mslmin: 0, mslmean: 1, mslmax: 2 })[effShade()] || 0);
+  const c = cell(lat, lon); return c && field.met ? lin(bil(field.met, c, 1), field.st.pMin, field.st.pMax) : null;
+}
 function sampleAcc(lat, lon) { const c = cell(lat, lon); return c ? sq(bil(field.met, c, 2), field.st.aMax) : null; }
 const PCH = { '1': [1, 'r1Max', 'rad'], '3': [0, 'r3Max', 'pcp'], '6': [1, 'r6Max', 'pcp'], '24': [2, 'r24Max', 'pcp'] };
 function samplePcp(lat, lon, period) {
@@ -198,11 +221,17 @@ function pcpAvail(p, st) { if (MODEL && !MODEL.pcp.includes(p)) return false; re
 // (the saved choice is kept, so switching back to a model that has it brings it back)
 function hasGust() { return !MODEL || MODEL.gust; }
 function hasRefl() { return !!(MODEL && MODEL.refl); }
+function isEns() { return !!(MODEL && MODEL.ens); }
+function hasWind() { return !MODEL || MODEL.wind !== false; }
+const ENS_SHADES = ['mslmin', 'mslmean', 'mslmax'];
 function effShade() {
+  if (isEns()) return ENS_SHADES.includes(settings.shade) ? settings.shade : 'mslmin';
+  if (ENS_SHADES.includes(settings.shade)) return 'speed';
   if (settings.shade === 'gust' && !hasGust()) return 'speed';
   if (settings.shade === 'refl' && !hasRefl()) return 'precip';
   return settings.shade;
 }
+function isoOn() { return isEns() ? settings.ensIso : settings.isobars; }
 function effPeriod() {
   const st = meta && meta.steps[stepIdx]; if (!st) return settings.precipPeriod;
   const want = settings.precipPeriod;
@@ -244,6 +273,13 @@ const PTHR = {
 const RTHR = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70];
 const RCOL = [[4,233,231],[1,159,244],[3,0,244],[2,253,2],[1,197,1],[0,142,0],[253,248,2],[229,188,0],[253,149,0],[253,0,0],[212,0,0],[188,0,0],[248,0,253],[152,84,198]];
 function rIndex(dbz) { let k = -1; while (k + 1 < RTHR.length && dbz >= RTHR[k + 1]) k++; return k; }
+// ensemble MSLP (hPa): pink/purple below ~950, blues/greens toward 1000, then yellow, orange, red
+const MLUT = makeLut([
+  [870,[160,0,70]],[900,[210,20,130]],[920,[255,70,190]],[940,[200,50,210]],[950,[150,40,200]],
+  [960,[90,40,220]],[970,[30,80,230]],[980,[20,150,220]],[990,[20,185,110]],[1000,[70,200,50]],
+  [1008,[200,220,40]],[1016,[255,210,30]],[1024,[255,140,20]],[1032,[230,40,20]],[1040,[160,0,20]],[1080,[80,0,30]]
+], 870, 1080);
+const MSL_TICKS = [880, 900, 920, 940, 960, 980, 1000, 1020, 1040, 1060];
 function pThresholds(period) { return PTHR[settings.precipUnit][period === 'total' ? 'total' : 'int']; }
 function pIndex(mm, thr) {  // -1 = transparent
   const v = settings.precipUnit === 'in' ? mm / 25.4 : mm; let k = -1;
@@ -288,6 +324,11 @@ function drawShade() {
         const z = sampleRefl(lat, lon); if (z === null) continue;
         const k = rIndex(z); if (k < 0) continue;
         [r, gg, b] = RCOL[k]; a = 200;
+      } else if (ENS_SHADES.includes(mode)) {
+        const ch = mode === 'mslmin' ? 0 : mode === 'mslmean' ? 1 : 2;
+        const hpa = sampleEns(lat, lon, ch); if (hpa === null) continue;
+        const k = (Math.min(1080, Math.max(870, Math.round(hpa))) - 870) * 3;
+        r = MLUT[k]; gg = MLUT[k + 1]; b = MLUT[k + 2]; a = 200;
       } else {
         const mm = samplePcp(lat, lon, period); if (mm === null) continue;
         const k = pIndex(mm, thr); if (k < 0) continue;
@@ -342,7 +383,7 @@ function drawBarbs() {
   fitCanvas(barbCv, dpr);
   const ctx = barbCv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, barbCv.width, barbCv.height);
-  if (!field || !settings.barbs) return;
+  if (!field || !settings.barbs || !hasWind() || stale()) return;
   const z = map.getZoom(), pxPerDeg = 256 * Math.pow(2, z) / 360;
   const spacingPx = 52;
   // thin barbs: take every n-th model grid point so they are ~spacingPx apart
@@ -373,7 +414,7 @@ function drawIsobars() {
   fitCanvas(isoCv, dpr);
   const ctx = isoCv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, isoCv.width, isoCv.height);
-  if (!field || !settings.isobars) return;
+  if (!field || !isoOn() || stale()) return;
   if (!field.iso) { const f = field; loadIso(f).then(() => { if (f === field) drawIsobars(); }); return; }
   const b = map.getBounds(), W = b.getWest(), E = b.getEast(), S = b.getSouth(), N = b.getNorth();
   const size = map.getSize();
@@ -449,7 +490,7 @@ function stepParticles() {
   ctx.globalCompositeOperation = 'destination-in';
   ctx.fillStyle = 'rgba(0,0,0,' + trailFade().toFixed(4) + ')'; ctx.fillRect(0, 0, partCv.width, partCv.height);
   ctx.globalCompositeOperation = 'source-over';
-  if (!field || !settings.particles || moving) return;
+  if (!field || !settings.particles || !hasWind() || moving || stale()) return;
   const k = settings.speed * 0.11 * Math.pow(1.15, map.getZoom() - 2);   // pixels per frame per m/s
   ctx.lineWidth = settings.width; ctx.strokeStyle = 'rgba(255,255,255,0.7)';
   ctx.beginPath();
@@ -500,10 +541,19 @@ $('slider').oninput = e => setStep(+e.target.value);
 // menu entries the current model doesn't have are greyed out with a short reason
 const PCP_LABELS = { '1': '1 h total', '3': '3 h total', '6': '6 h total', '24': '24 h total', total: 'Total since run start' };
 function syncModelMenus() {
-  const mi = minfo(), sh = $('shadeSel'), ps = $('pcpSel');
+  const mi = minfo(), sh = $('shadeSel'), ps = $('pcpSel'), ens = isEns();
+  document.body.classList.toggle('ens-model', ens);
+  const labels = { speed: 'Wind speed', gust: 'Wind gust', temp: 'Temperature (2 m)', precip: 'Precipitation',
+    refl: 'Radar (reflectivity)', mslmin: 'Ensemble min MSLP', mslmean: 'Ensemble mean MSLP', mslmax: 'Ensemble max MSLP', off: 'Off' };
   for (const o of sh.options) {
-    if (o.value === 'gust') { o.disabled = !hasGust(); o.textContent = hasGust() ? 'Wind gust' : 'Wind gust (not in ' + mi.short + ')'; }
-    if (o.value === 'refl') { o.disabled = !hasRefl(); o.textContent = hasRefl() ? 'Radar (reflectivity)' : 'Radar (not in ' + mi.short + ')'; }
+    const isEnsOpt = ENS_SHADES.includes(o.value);
+    const ok = o.value === 'off' || (ens ? isEnsOpt : !isEnsOpt && (o.value !== 'gust' || hasGust()) && (o.value !== 'refl' || hasRefl()));
+    o.disabled = !ok;
+    o.hidden = ens ? !(isEnsOpt || o.value === 'off') : isEnsOpt;
+    let t = labels[o.value] || o.value;
+    if (!ok && o.value === 'gust') t = 'Wind gust (not in ' + mi.short + ')';
+    if (!ok && o.value === 'refl') t = 'Radar (not in ' + mi.short + ')';
+    o.textContent = t;
   }
   sh.value = effShade();
   for (const o of ps.options) {
@@ -511,6 +561,11 @@ function syncModelMenus() {
     o.textContent = PCP_LABELS[o.value] + (has ? '' : ' (not in ' + mi.short + ': ' + mi.stepTxt + ' data)');
     o.disabled = !has;
   }
+  $('tParticles').parentElement.classList.toggle('windOnly', true);
+  $('tBarbs').parentElement.classList.toggle('windOnly', true);
+  $('tParticles').checked = hasWind() && settings.particles;
+  $('tBarbs').checked = hasWind() && settings.barbs;
+  $('tIsobars').checked = isoOn();
 }
 function updateNotes() {
   const st = meta && meta.steps[stepIdx], n = $('shadeNote'), sel = $('pcpSel');
@@ -523,8 +578,12 @@ function updateNotes() {
   let txt = '';
   if (settings.shade === 'gust' && !hasGust()) txt = mi.short + ' has no gust data: showing wind speed';
   else if (settings.shade === 'refl' && !hasRefl()) txt = mi.short + ' has no radar data: showing precipitation';
+  else if (ENS_SHADES.includes(shade) && !isEns()) txt = 'Ensemble MSLP is only in ENS: showing wind speed';
   else if (shade === 'gust') txt = st.gustPeriod ? 'max gust in previous ' + st.gustPeriod + ' h' : st.gustPeriod === 0 ? 'gust at the valid time' : 'no gust at +0h (starts +3h)';
   else if (shade === 'refl') txt = 'simulated composite radar reflectivity (dBZ)';
+  else if (shade === 'mslmin') txt = 'lowest sea-level pressure among the ' + ((st && st.nMembers) || 50) + ' ensemble members at each point';
+  else if (shade === 'mslmean') txt = 'mean sea-level pressure of the ' + ((st && st.nMembers) || 50) + ' ensemble members';
+  else if (shade === 'mslmax') txt = 'highest sea-level pressure among the ' + ((st && st.nMembers) || 50) + ' ensemble members at each point';
   else if (shade === 'precip') {
     const p = effPeriod(), want = settings.precipPeriod;
     // show the period actually used when the saved one doesn't exist in this model (saved choice is kept)
@@ -540,12 +599,14 @@ function updateNotes() {
   drawLegend();
 }
 $('shadeSel').value = settings.shade; $('pcpSel').value = settings.precipPeriod;
-$('shadeSel').onchange = e => { if ((e.target.value === 'gust' && !hasGust()) || (e.target.value === 'refl' && !hasRefl())) { e.target.value = effShade(); return; } settings.shade = e.target.value; saveSettings(); drawShade(); updateNotes(); };
+$('shadeSel').onchange = e => { if (e.target.selectedOptions[0].disabled) { e.target.value = effShade(); return; } settings.shade = e.target.value; saveSettings(); if (field) pickIso(field); drawShade(); drawIsobars(); updateNotes(); };
 $('pcpSel').onchange = e => { if (MODEL && !MODEL.pcp.includes(e.target.value)) { e.target.value = effPeriod() || settings.precipPeriod; return; } settings.precipPeriod = e.target.value; saveSettings(); drawShade(); updateNotes(); };
 [['tParticles', 'particles'], ['tBarbs', 'barbs'], ['tIsobars', 'isobars']].forEach(([id, k]) => {
-  $(id).checked = settings[k];
+  $(id).checked = k === 'isobars' ? isoOn() : settings[k];
   $(id).onchange = e => {
-    settings[k] = e.target.checked; saveSettings();
+    if (k === 'isobars' && isEns()) settings.ensIso = e.target.checked;
+    else settings[k] = e.target.checked;
+    saveSettings();
     if (k === 'particles') partCv.getContext('2d').clearRect(0, 0, partCv.width, partCv.height);
     if (k === 'barbs') drawBarbs(); if (k === 'isobars') drawIsobars();
   };
@@ -565,28 +626,35 @@ function fmtCoord(la, lo) {
 function autoVars() {
   const a = new Set();
   if (!settings.hoverAuto) return a;
+  if (isEns()) { a.add('hvPres'); return a; }
   const sh = effShade();
   if (sh === 'speed' || sh === 'off') { a.add('hvSpeed'); a.add('hvDir'); }
   if (sh === 'gust') a.add('hvGust');
   if (sh === 'temp') a.add('hvTemp');
   if (sh === 'precip') a.add('hvPcp');
   if (sh === 'refl') a.add('hvRefl');
-  if (settings.isobars) a.add('hvPres');
+  if (isoOn()) a.add('hvPres');
   return a;
 }
-// only variables the current model has (AIFS: no gust)
-function modelHas(k) { return k === 'hvGust' ? hasGust() : k === 'hvRefl' ? hasRefl() : true; }
+// only variables the current model has (AIFS: no gust; ENS: pressure only)
+function modelHas(k) {
+  if (isEns()) return k === 'hvPres' || k === 'hvCoord';
+  if (k === 'hvGust') return hasGust();
+  if (k === 'hvRefl') return hasRefl();
+  if (k === 'hvSpeed' || k === 'hvDir') return hasWind();
+  return true;
+}
 function shown(k) { return modelHas(k) && (settings[k] || autoVars().has(k)); }
 function readoutRows(la, lo) {
-  const p = sample(la, lo);
-  if (!p) return null;
+  if (!cell(la, lo)) return null;
+  const p = hasWind() ? sample(la, lo) : null;
   const st = field.st, det = settings.hoverStyle === 'detailed', rows = [];
   const sub = t => det && t ? ` <span class="sub">${t}</span>` : '';
   const na = '<span class="sub">n/a at +0h</span>';
-  const ms = Math.hypot(p[0], p[1]), dir = (Math.atan2(-p[0], -p[1]) * 180 / Math.PI + 360) % 360;
+  const ms = p ? Math.hypot(p[0], p[1]) : 0, dir = p ? (Math.atan2(-p[0], -p[1]) * 180 / Math.PI + 360) % 360 : 0;
   const second = v => settings.units === 'ms' ? (v * MS2KT).toFixed(0) + ' kt' : v.toFixed(1) + ' m/s';
-  if (shown('hvSpeed')) rows.push(['Wind', fmtSpeed(ms) + sub(second(ms))]);
-  if (shown('hvDir')) rows.push(['Direction', 'from ' + COMPASS[Math.round(dir / 22.5) % 16] + sub(dir.toFixed(0) + '°')]);
+  if (shown('hvSpeed') && p) rows.push(['Wind', fmtSpeed(ms) + sub(second(ms))]);
+  if (shown('hvDir') && p) rows.push(['Direction', 'from ' + COMPASS[Math.round(dir / 22.5) % 16] + sub(dir.toFixed(0) + '°')]);
   if (shown('hvGust')) {
     const gs = sampleGust(la, lo);
     rows.push(['Gust', gs === null ? na : fmtSpeed(gs) + sub(second(gs) + (st.gustPeriod ? ' · max, prev ' + st.gustPeriod + ' h' : ' · at valid time'))]);
@@ -595,7 +663,22 @@ function readoutRows(la, lo) {
     const c = sampleTemp(la, lo);
     rows.push(['Temp', fmtTemp(c) + sub(settings.tempUnit === 'F' ? c.toFixed(1) + '°C' : (c * 9 / 5 + 32).toFixed(0) + '°F')]);
   }
-  if (shown('hvPres')) rows.push(['Pressure', samplePres(la, lo).toFixed(0) + ' hPa' + sub('sea level')]);
+  if (shown('hvPres')) {
+    if (isEns()) {
+      const nm = (field.st && field.st.nMembers) || 50;
+      const lab = { mslmin: 'Min MSLP', mslmean: 'Mean MSLP', mslmax: 'Max MSLP' }[effShade()] || 'MSLP';
+      const v = samplePres(la, lo);
+      if (v !== null) rows.push([lab, v.toFixed(0) + ' hPa' + sub(nm + ' members · sea level')]);
+      if (det) {
+        const mn = sampleEns(la, lo, 0), me = sampleEns(la, lo, 1), mx = sampleEns(la, lo, 2);
+        if (effShade() !== 'mslmin' && mn !== null) rows.push(['Min MSLP', mn.toFixed(0) + ' hPa']);
+        if (effShade() !== 'mslmean' && me !== null) rows.push(['Mean MSLP', me.toFixed(0) + ' hPa']);
+        if (effShade() !== 'mslmax' && mx !== null) rows.push(['Max MSLP', mx.toFixed(0) + ' hPa']);
+      }
+    } else {
+      const v = samplePres(la, lo); if (v !== null) rows.push(['Pressure', v.toFixed(0) + ' hPa' + sub('sea level')]);
+    }
+  }
   const other = mm => settings.precipUnit === 'in' ? mm.toFixed(1) + ' mm' : (mm / 25.4).toFixed(2) + ' in';
   let totalShown = false;
   if (shown('hvPcp')) {
@@ -699,6 +782,13 @@ function drawLegend() {
     const bw = W / RTHR.length;
     RTHR.forEach((t, k) => { ctx.fillStyle = `rgb(${RCOL[k].join(',')})`; ctx.fillRect(k * bw, 0, bw - 1, c.height); if (k % 2 === 0) tick(k * bw + 2, t); });
     $('legendTitle').textContent = 'Radar reflectivity, composite (dBZ)';
+  } else if (ENS_SHADES.includes(mode)) {
+    const lo = 870, hi = 1080;
+    for (let x = 0; x < W; x++) { const k = Math.round(lo + x / (W - 1) * (hi - lo)); ctx.fillStyle = `rgb(${MLUT[(k - lo) * 3]},${MLUT[(k - lo) * 3 + 1]},${MLUT[(k - lo) * 3 + 2]})`; ctx.fillRect(x, 0, 1, c.height); }
+    MSL_TICKS.filter(t => t >= lo && t <= hi).forEach(t => tick((t - lo) / (hi - lo) * W, t));
+    const lab = { mslmin: 'Ensemble min MSLP', mslmean: 'Ensemble mean MSLP', mslmax: 'Ensemble max MSLP' }[mode];
+    const nm = (meta && meta.steps[stepIdx] && meta.steps[stepIdx].nMembers) || 50;
+    $('legendTitle').textContent = lab + ' (hPa, ' + nm + ' members)';
   } else if (mode === 'precip') {
     const per = effPeriod() || settings.precipPeriod, thr = pThresholds(per), bw = W / thr.length;
     thr.forEach((t, k) => { ctx.fillStyle = `rgb(${PCOL[k].join(',')})`; ctx.fillRect(k * bw, 0, bw - 1, c.height); if (k % 2 === 0) tick(k * bw + 2, t); });

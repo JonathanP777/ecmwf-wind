@@ -158,3 +158,8 @@ html,body{margin:0;height:100%;background:#111;font-family:system-ui,-apple-syst
   #linesBody label{min-height:26px}
   body.lines-open #legend{display:none}
 }
+
+/* ENS has no wind / precip: hide those toggles and grey the unused colour options */
+body.ens-model .windOnly{display:none}
+#shadeSel option:disabled{color:#889}
+body.ens-model #barbBlock{display:none}

@@ -3,7 +3,7 @@
 A zoomable weather map showing the latest forecasts of four models — ECMWF IFS and AIFS
 (global) and NOAA HRRR and RRFS (3 km, contiguous US) — with animated "flowing" wind
 particles, proper meteorological wind barbs, colour layers (wind, gust, temperature,
-precipitation, radar), isobars and a forecast-hour slider. Each model keeps its 10 newest runs.
+precipitation, radar, ensemble MSLP), isobars and a forecast-hour slider. Each model keeps its 10 newest runs.
 
 ## What's in here
 
@@ -207,12 +207,13 @@ Use the **Model** menu to switch between:
 - **ECMWF AIFS**, ECMWF's AI model ([aifs-single](https://www.ecmwf.int/en/forecasts/dataset/aifs-machine-learning-data)). Every run goes to +360 h in 6-hourly steps. AIFS has no wind-gust data and no 1 h or 3 h precipitation totals, so those menu items are greyed out.
 - **NOAA HRRR** ([High-Resolution Rapid Refresh](https://rapidrefresh.noaa.gov/hrrr/)), 3 km, contiguous US, new run every hour.
 - **NOAA RRFS** ([Rapid Refresh Forecast System](https://registry.opendata.aws/noaa-rrfs-ops/)), 3 km, contiguous US; NOAA's new convection-allowing model that replaced the NAM, HiresW, HREF and SREF in October 2026.
+- **ECMWF ENS** (the Ensemble, also called EPS). Open data publishes the 50 perturbed members (there is no control run in the open files). The main layer is **ensemble min MSLP**: at every point, the lowest sea-level pressure among those 50 members, shown with a WeatherBell-style colour scale, contours and H/L markers. Ensemble mean and max MSLP are also available (they come in the same file, so they cost almost nothing extra). ENS has no wind, temperature, precipitation or radar — those menu items are hidden. Steps match IFS: 3-hourly to +144 h, then 6-hourly to +360 h (00/12Z) or +144 h (06/18Z).
 
-Each model's menus only offer what that model has. When you switch models, the map tries to stay on the same valid time. The site also remembers the last model you picked. A link with `?model=aifs` (or `hrrr`, `rrfs`) opens that model directly. Outside the HRRR/RRFS area the readout says so.
+Each model's menus only offer what that model has. When you switch models, the map tries to stay on the same valid time. The site also remembers the last model you picked. A link with `?model=aifs` (or `hrrr`, `rrfs`, `ens`) opens that model directly. Outside the HRRR/RRFS area the readout says so.
 
 Data layout (made by `update_data.py`):
-- `index.json` (`"layout": 3`) keeps `generated` and `runs` (the IFS runs, for older pages). It also has `models`, with one entry per model: `key`, `name`, `path` (relative: `runs/`, `aifs/runs/`, `hrrr/runs/`, `rrfs/runs/`), `gust`, `refl`, `pcp`, `global`, `region` (regional models: `name`, `bounds`, `outline`) and `runs`.
+- `index.json` (`"layout": 3`) keeps `generated` and `runs` (the IFS runs, for older pages). It also has `models`, with one entry per model: `key`, `name`, `path` (relative: `runs/`, `aifs/runs/`, `hrrr/runs/`, `rrfs/runs/`, `ens/runs/`), `gust`, `refl`, `pcp`, `wind`, `ens`, `global`, `region` (regional models: `name`, `bounds`, `outline`) and `runs`.
 - Every run entry has `dir` (the folder the site shows: `<run id>/0p25` or `0p50` for ECMWF, `<run id>/3km` or `6km` for HRRR/RRFS), `dirs` (all folders kept for that run), `res`, `resLabel`, `nSteps` and `maxHour`. A run's files are at `DATA_BASE + path + dir + '/'`, e.g. `hrrr/runs/2026110301/3km/meta.json`.
-- Health check: each model should have up to 10 runs, the newest with a full-resolution `dir`; `generated` should be less than ~2 h old.
+- Health check: each model should have up to 10 runs, the newest with a full-resolution `dir`; `generated` should be less than ~2 h old. After a new model is added, its 10 runs may take a few hourly jobs to fill in.
 
 To add another model, add an entry to `MODELS` in `update_data.py`, to `MODEL_INFO` in `app.js` and to the job list in the workflow.

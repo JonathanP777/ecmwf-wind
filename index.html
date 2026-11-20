@@ -32,7 +32,9 @@
   </div>
   <div class="row"><label for="shadeSel">Colours</label>
     <select id="shadeSel"><option value="speed">Wind speed</option><option value="gust">Wind gust</option>
-      <option value="temp">Temperature (2 m)</option><option value="precip">Precipitation</option><option value="refl">Radar (reflectivity)</option><option value="off">Off</option></select>
+      <option value="temp">Temperature (2 m)</option><option value="precip">Precipitation</option><option value="refl">Radar (reflectivity)</option>
+      <option value="mslmin">Ensemble min MSLP</option><option value="mslmean">Ensemble mean MSLP</option><option value="mslmax">Ensemble max MSLP</option>
+      <option value="off">Off</option></select>
     <span class="pcpwrap"><select id="pcpSel" title="Precipitation period">
       <option value="1">1 h total</option>
       <option value="3">3 h total</option><option value="6">6 h total</option><option value="24">24 h total</option>
@@ -65,8 +67,10 @@
   <div class="ltitle" id="legendTitle">Wind speed (knots)</div>
   <canvas id="legendBar" width="260" height="14"></canvas>
   <div id="legendTicks"></div>
+  <div id="barbBlock">
   <div class="ltitle" style="margin-top:8px">Barbs <span class="lnote">(always in knots)</span></div>
   <canvas id="barbKey" width="260" height="46"></canvas>
+  </div>
 </div>
 
 <div id="ams">

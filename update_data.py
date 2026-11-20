@@ -8,6 +8,8 @@ Models (see MODELS below; add a new entry there + a line in MODEL_INFO in app.js
   rrfs  NOAA RRFS v1 (3 km, contiguous US subset), 10 newest runs of the cycles with full hourly output
         on AWS (00/03/06/.../21 UTC): 0-84 h hourly at 00/06/12/18 UTC, 0-18 h at 03/09/15/21 UTC.
         (RRFS also runs every hour, but for the other hours AWS only has 15-minute "subh" files.)
+  ens   ECMWF Ensemble (ENS / EPS), 10 newest runs, same steps as IFS. Open data has the 50 perturbed
+        members (no control). Per grid point we store member-wise min / mean / max MSLP.
   For each model the newest run is published at full resolution (ECMWF 0.25 deg, NOAA ~3 km) and
   every run also at half resolution (0.5 deg / ~6 km); older runs are shown at half resolution.
 
@@ -36,7 +38,9 @@ Per run and forecast step we write (8-bit, scaled with per-step min/max in meta.
   met_XXX.png   RGB: 2 m temperature, mean sea level pressure, precip accumulated since run start
   pcp_XXX.png   RGB: precip in the previous 3 h, 6 h, 24 h (sqrt scaling)
   rad_XXX.png   RGB: composite reflectivity, precip in the previous 1 h (NOAA models only)
+  ens_XXX.png   RGB: ensemble min / mean / max MSLP (ENS only; fixed 870-1080 hPa scale)
   isobars_XXX.json  MSLP contour lines every 4 hPa + H/L centres
+                    (ENS: {"min","mean","max"} each with lines + H/L)
 """
 import json, os, sys, shutil, time, datetime as dt, urllib.request, urllib.error, glob
 from concurrent.futures import ThreadPoolExecutor
@@ -77,7 +81,15 @@ MODELS = {
              "nRuns": 10, "steps": lambda run: list(range(0, 85 if run.hour % 6 == 0 else 19)), "cycle": 3, "search": 45,
              "cache": "rrfs-", "site": "rrfs/runs", "gust": True, "refl": True, "pcp": ["1", "3", "6", "24", "total"],
              "res": ("3km", "6km")},
+    # Open data ENS = 50 perturbed members (type pf) in ifs/0p25/enfo; there is no control (cf) file.
+    "ens":  {"name": "ECMWF ENS", "long": "ECMWF Ensemble (ENS) open data", "kind": "ecmwf", "dir": "ifs",
+             "stream": "enfo", "ftype": "ef", "nRuns": 10,
+             "steps": lambda run: LONG_STEPS if run.hour in (0, 12) else SHORT_STEPS, "cycle": 6, "search": 96,
+             "cache": "ens-", "site": "ens/runs", "gust": False, "refl": False, "pcp": [], "wind": False, "ens": True,
+             "res": ("0p25", "0p50")},
 }
+# 8-bit packing range for ensemble MSLP (hPa). Wide enough for deep cyclones and winter highs.
+P_LO, P_HI = 870.0, 1080.0
 FORMAT = 3   # bump to invalidate cached runs when the file format changes
 DEFAULT_DATA_URL = "https://pub-797c80c27d0f42d6ad578c6ed6044be2.r2.dev/"
 
@@ -101,8 +113,9 @@ def url(run, step, ext, model="ifs"):
     cfg = MODELS[model]
     if cfg["kind"] == "noaa":
         return cfg["url"].format(d=run, s=step) + (".idx" if ext == "index" else "")
-    return (f"{BASE}/{run:%Y%m%d}/{run:%H}z/{cfg['dir']}/0p25/oper/"
-            f"{run:%Y%m%d%H%M%S}-{step}h-oper-fc.{ext}")
+    stream, typ = cfg.get("stream", "oper"), cfg.get("ftype", "fc")
+    return (f"{BASE}/{run:%Y%m%d}/{run:%H}z/{cfg['dir']}/0p25/{stream}/"
+            f"{run:%Y%m%d%H%M%S}-{step}h-{stream}-{typ}.{ext}")
 
 def steps_for(run, model="ifs"): return MODELS[model]["steps"](run)
 def run_id(run): return run.strftime("%Y%m%d%H")
@@ -266,6 +279,43 @@ def fetch_tp(run, step, model="ifs"):
     # IFS gives metres of water; AIFS gives kg m-2 (= mm)
     return step, a * (1000.0 if units.strip() == "m" else 1.0)
 
+# ---------------------------------------------------------------- ECMWF Ensemble (ENS) MSLP
+def ens_msl_entries(run, step):
+    raw = http(url(run, step, "index", "ens"))
+    if raw is None: raise RuntimeError(f"missing ENS index {run} +{step}h")
+    out = []
+    for line in raw.decode().splitlines():
+        e = json.loads(line)
+        if e.get("param") == "msl" and e.get("levtype") == "sfc": out.append(e)
+    return out
+
+def pack_msl(a_pa):
+    return np.clip(np.round((a_pa / 100.0 - P_LO) / (P_HI - P_LO) * 255), 0, 255).astype(np.uint8)
+
+def process_ens_step(run, steps, i, out):
+    """Download MSLP from all 50 perturbed members; store min / mean / max + contours."""
+    step = steps[i]
+    entries = ens_msl_entries(run, step)
+    if len(entries) < 40:
+        raise RuntimeError(f"ENS {run_id(run)} +{step}h: expected 50 msl members, got {len(entries)}")
+    if len(entries) != 50:
+        print(f"warning: ENS {run_id(run)} +{step}h has {len(entries)} msl members (expected 50)", flush=True)
+    def fetch(e):
+        return http(url(run, step, "grib2", "ens"), (e["_offset"], e["_offset"] + e["_length"] - 1))
+    with ThreadPoolExecutor(10) as ex:
+        raws = list(ex.map(fetch, entries))
+    stack = np.stack([read_grib(r)[0] for r in raws])          # Pa, 50 × lat × lon
+    mn, mean, mx = stack.min(0), stack.mean(0), stack.max(0)
+    st = {"hour": step, "valid": f"{run + dt.timedelta(hours=step):%Y-%m-%dT%H:%MZ}",
+          "pLo": P_LO, "pHi": P_HI, "nMembers": int(len(entries))}
+    rgb = np.dstack([pack_msl(mn), pack_msl(mean), pack_msl(mx)])
+    name = f"{step:03d}"
+    for res, sl in (("full", np.s_[:, :]), ("half", np.s_[::2, ::2])):
+        save_png(rgb[sl], os.path.join(out, res, f"ens_{name}.png"))
+    iso = {"min": isobars(mn / 100.0), "mean": isobars(mean / 100.0), "max": isobars(mx / 100.0)}
+    json.dump(iso, open(os.path.join(out, "isobars", f"isobars_{name}.json"), "w"), separators=(",", ":"))
+    return st
+
 # ---------------------------------------------------------------- NOAA HRRR / RRFS
 def noaa_inventory(run, step, model):
     txt = http(url(run, step, "index", model))
@@ -344,13 +394,19 @@ def build_run(run, model="ifs"):
     for d in ("full", "half", "isobars"): os.makedirs(os.path.join(out, d))
     steps = steps_for(run, model)
     noaa = MODELS[model]["kind"] == "noaa"
-    with ThreadPoolExecutor(6 if noaa else 8) as ex:
-        if noaa:
-            tpall = dict(ex.map(lambda st: noaa_tp(run, st, model), steps))
-            sts = list(ex.map(lambda i: process_noaa_step(run, steps, i, out, tpall, model), range(len(steps))))
-        else:
-            tpall = dict(ex.map(lambda st: fetch_tp(run, st, model), steps))   # accumulated precip, mm
-            sts = list(ex.map(lambda i: process_step(run, steps, i, out, tpall, model), range(len(steps))))
+    ens = MODELS[model].get("ens")
+    if ens:
+        # two steps at a time (each step already opens 10 downloads); decode is serial per step
+        with ThreadPoolExecutor(2) as ex:
+            sts = list(ex.map(lambda i: process_ens_step(run, steps, i, out), range(len(steps))))
+    else:
+        with ThreadPoolExecutor(6 if noaa else 8) as ex:
+            if noaa:
+                tpall = dict(ex.map(lambda st: noaa_tp(run, st, model), steps))
+                sts = list(ex.map(lambda i: process_noaa_step(run, steps, i, out, tpall, model), range(len(steps))))
+            else:
+                tpall = dict(ex.map(lambda st: fetch_tp(run, st, model), steps))   # accumulated precip, mm
+                sts = list(ex.map(lambda i: process_step(run, steps, i, out, tpall, model), range(len(steps))))
     del tpall
     json.dump({"run": f"{run:%Y-%m-%dT%H:%MZ}", "id": rid, "steps": sts}, open(os.path.join(out, "steps.json"), "w"))
     open(os.path.join(out, "DONE"), "w").write(str(FORMAT))
@@ -405,7 +461,8 @@ def current_index():
 def model_entry(model, runs):
     cfg = MODELS[model]
     e = {"key": model, "name": cfg["name"], "path": f"{cfg['site']}/", "gust": cfg["gust"], "refl": cfg["refl"],
-         "pcp": cfg["pcp"], "global": cfg["kind"] != "noaa", "runs": runs}
+         "pcp": cfg["pcp"], "wind": cfg.get("wind", True), "ens": bool(cfg.get("ens")),
+         "global": cfg["kind"] != "noaa", "runs": runs}
     if region(model): e["region"] = region(model)
     return e
 
