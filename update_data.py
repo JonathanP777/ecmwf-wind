@@ -641,6 +641,7 @@ def update_members(t0, budget, old):
     rid, steps = run_id(run), mem_steps_for(run)
     dest = mem_dest(run)
     os.makedirs(dest, exist_ok=True)
+    prog_p = os.path.join(dest, "progress.json")
     remote_meta = remote_member_json(run, "meta.json")
     if remote_meta and len(remote_meta.get("steps") or []) >= len(steps):
         print(f"members of {rid}: already complete in the bucket")
