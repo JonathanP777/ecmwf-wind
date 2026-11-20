@@ -106,26 +106,36 @@ alpha channel of `wind_XXX.png` to mark the model area. There is also `isobars_X
 - The **newest run** of each model is published at full resolution (0.25° or ~3 km).
 - The **9 older runs** are published at half resolution (0.5° or ~6 km, every other grid point).
 
-Measured sizes (Nov 2026): IFS 0.86 GB, AIFS 0.61 GB, HRRR 0.42 GB, RRFS 1.15 GB for 10 runs each
-(about 3.05 GB in total; at most ~4 GB while a refresh keeps the previous folders, well inside
-R2's 10 GB free storage).
+Measured sizes (20 Nov 2026): IFS 0.99 GB, AIFS 0.61 GB, HRRR 0.39 GB, RRFS 0.78 GB, ENS 0.39 GB
+for 10 runs each (about 3.28 GB in total; a little more while a refresh keeps the previous
+folders, well inside R2's 10 GB free storage).
 
 ## Live website
 
 Hosted free on GitHub Pages: https://jonathanp777.github.io/ecmwf-wind/
 
-The workflow in `.github/workflows/deploy.yml` runs every hour (at :20), on every push to
-`main`, and on demand (Actions tab -> "Run workflow"):
+Two workflows keep the data and the page up to date. They can run at the same time:
 
-1. **One job per model** (`ifs`, `aifs`, `hrrr`, `rrfs`, side by side). Each reads the live
-   `index.json` from R2, works out the model's 10 newest complete runs, builds only the run
-   folders that are missing (newest first, stopping after 35 minutes — anything left is built by
-   the next hourly job), and uploads them. A failing model doesn't stop the others.
-2. **Publish**: merges the models into `index.json` (a model whose job failed keeps its previous
-   entry), checks every listed folder is really in the bucket, uploads `index.json` last, then
-   deletes folders no longer needed.
-3. **Site**: the web page itself (code only) goes to GitHub Pages — only on pushes and manual
-   runs, not on the hourly schedule. Forecast data is never committed to git.
+- `.github/workflows/deploy.yml` (hourly at :20, every push to `main`, and on demand) builds
+  `ifs`, `aifs`, `hrrr` and `rrfs`, publishes their entries in `index.json`, and deploys the
+  website on pushes and manual runs.
+- `.github/workflows/ens.yml` (hourly at :35, and when ensemble-related files change) builds
+  only the ECMWF Ensemble. It has its own concurrency group, so a long ENS backfill can never
+  queue the other models' hourly refresh. A new 00/12Z ENS run takes about 10 minutes to build
+  (06/18Z about 5 minutes) once the first 10 runs are in place.
+
+Shared steps:
+
+1. **One job per model**, side by side. Each reads the live `index.json` from R2, works out
+   the model's 10 newest complete runs, builds only the run folders that are missing (newest
+   first, stopping after 35 minutes — anything left is built by the next hourly job), and
+   uploads them. A failing model doesn't stop the others.
+2. **Publish**: merges that workflow's models into `index.json` (a model whose job failed
+   keeps its previous entry; the other workflow's models are left untouched), checks every
+   listed folder is really in the bucket, uploads `index.json` last, then deletes folders of
+   its own models that are no longer needed.
+3. **Site** (deploy.yml only): the web page itself (code only) goes to GitHub Pages — only on
+   pushes and manual runs, not on the hourly schedule. Forecast data is never committed to git.
 
 ### Forecast data on Cloudflare R2
 
@@ -216,4 +226,4 @@ Data layout (made by `update_data.py`):
 - Every run entry has `dir` (the folder the site shows: `<run id>/0p25` or `0p50` for ECMWF, `<run id>/3km` or `6km` for HRRR/RRFS), `dirs` (all folders kept for that run), `res`, `resLabel`, `nSteps` and `maxHour`. A run's files are at `DATA_BASE + path + dir + '/'`, e.g. `hrrr/runs/2026110301/3km/meta.json`.
 - Health check: each model should have up to 10 runs, the newest with a full-resolution `dir`; `generated` should be less than ~2 h old. After a new model is added, its 10 runs may take a few hourly jobs to fill in.
 
-To add another model, add an entry to `MODELS` in `update_data.py`, to `MODEL_INFO` in `app.js` and to the job list in the workflow.
+To add another model, add an entry to `MODELS` in `update_data.py`, to `MODEL_INFO` in `app.js` and to the job list in `deploy.yml` (or give it its own workflow if a build can take long enough to delay the others).

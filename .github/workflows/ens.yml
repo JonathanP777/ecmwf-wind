@@ -1,0 +1,91 @@
+name: Update ensemble forecast
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ens.yml'
+      - 'update_data.py'
+      - 'r2_sync.py'
+      - 'hires.py'
+      - 'requirements.txt'
+  workflow_dispatch:
+  schedule:
+    # 15 minutes after the other models, so a long ENS job never queues IFS/AIFS/HRRR/RRFS.
+    # A new ENS run (every 6 h) takes about 5-10 minutes to build once the 10-run backfill is done.
+    - cron: '35 * * * *'
+
+permissions:
+  contents: read
+
+# its own group: this workflow and deploy.yml can run at the same time
+concurrency:
+  group: ens
+  cancel-in-progress: false
+
+env:
+  DATA_URL: https://pub-797c80c27d0f42d6ad578c6ed6044be2.r2.dev/
+  R2_ACCOUNT_ID: 109b9e12fb8a09f6c53ab91bd3a5281e
+  R2_BUCKET: ecmwf-wind-data
+
+jobs:
+  model:
+    runs-on: ubuntu-latest
+    # 35 min build budget + time to upload; one 00/12Z run is ~10 min, so 1-2 new runs fit
+    timeout-minutes: 50
+    env:
+      BUILD_BUDGET_MIN: "35"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install Python packages
+        run: pip install -r requirements.txt
+      - name: Build missing runs (ens)
+        run: python update_data.py model ens
+      - name: Upload new runs to Cloudflare R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          mkdir -p data
+          du -sh data
+          python r2_sync.py upload data
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frag-ens
+          path: frag/ens.json
+          retention-days: 1
+          if-no-files-found: ignore
+
+  publish:
+    needs: model
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: frag-*
+          path: frag
+          merge-multiple: true
+      - name: Publish ENS entry in index.json
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          ls frag || true
+          if [ ! -f frag/ens.json ]; then
+            echo "no ens fragment (job failed?); leaving index.json unchanged"
+            exit 0
+          fi
+          python update_data.py publish
+          python r2_sync.py publish data

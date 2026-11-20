@@ -26,17 +26,18 @@ env:
   R2_BUCKET: ecmwf-wind-data
 
 jobs:
-  # one job per model, side by side; a failure in one model never blocks the others
+  # one job per model, side by side; a failure in one model never blocks the others.
+  # ENS has its own workflow (.github/workflows/ens.yml) and concurrency group, so a long
+  # ensemble backfill can never queue the hourly IFS/AIFS/HRRR/RRFS refresh.
   model:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        model: [ifs, aifs, hrrr, rrfs, ens]
+        model: [ifs, aifs, hrrr, rrfs]
     env:
-      # ENS fetches 50 members per step, so it gets a longer budget; others stay at 35 min.
-      BUILD_BUDGET_MIN: "${{ matrix.model == 'ens' && '70' || '35' }}"
+      BUILD_BUDGET_MIN: "35"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
