@@ -209,6 +209,10 @@ Open **Additional Map Settings → Drawing tools** (bottom left). You can use:
 
 **Select** lets you move or edit a drawing. Press **Esc**, or click the active tool again, to go back to panning the map.
 
+### Drop pins
+
+Open **Additional Map Settings** and turn on **Drop pins on click**. Then click the map to drop a rounded label of the current layer's value at that point (wind speed, gusts, temperature, pressure, precipitation, radar, or an ensemble min/mean/max or individual member). Click a pin — or its × — to remove it, or use **Clear pins**. The labels update as you scrub or animate through forecast hours, or switch the run, model, member or layer; they follow the units in Settings, and they appear in **Save image (PNG)**. Pin positions are remembered in your browser. While a drawing tool is selected, clicks still draw rather than drop a pin.
+
 Drawings are saved in your browser. You can export them as a GeoJSON file and import them again. **Save image (PNG)** downloads the current view with a caption showing the model run, valid time and layer. Drawing uses [Leaflet-Geoman](https://github.com/geoman-io/leaflet-geoman) (MIT), stored locally in `vendor/`.
 
 ## Models

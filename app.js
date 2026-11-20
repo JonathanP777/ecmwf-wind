@@ -32,7 +32,8 @@ const DEFAULTS = { units: 'kt', tempUnit: 'F', precipUnit: 'in', shade: 'speed',
   // pinpoint readout options ("Additional Map Settings" menu)
   // hoverAuto: show the variable(s) matching the displayed layer; hv* = extra (or, with auto off, the full manual set)
   hoverOn: true, hoverAuto: true, hoverStyle: 'compact', hvSpeed: false, hvDir: false, hvGust: false, hvTemp: false,
-  hvPres: false, hvPcp: false, hvPcpTot: false, hvRefl: false, hvCoord: false };
+  hvPres: false, hvPcp: false, hvPcpTot: false, hvRefl: false, hvCoord: false,
+  dropPins: false };
 const HOVER_KEYS = ['hoverOn', 'hoverAuto', 'hoverStyle', 'hvSpeed', 'hvDir', 'hvGust', 'hvTemp', 'hvPres', 'hvPcp', 'hvPcpTot', 'hvRefl', 'hvCoord'];
 const UNITS = {
   kt:  { f: 1.943844, label: 'kt',   name: 'knots', ticks: [0, 10, 20, 30, 40, 50, 60, 80, 100] },
@@ -54,6 +55,8 @@ try {
   if (!['compact', 'detailed'].includes(settings.hoverStyle)) settings.hoverStyle = 'compact';
 } catch (e) {}
 function saveSettings() { try { localStorage.setItem('windSettings', JSON.stringify(settings)); } catch (e) {} }
+var pinCtl = null;
+function refreshPins() { if (pinCtl) pinCtl.refresh(); }
 function fmtSpeed(ms) { const u = UNITS[settings.units]; const v = ms * u.f; return (settings.units === 'ms' ? v.toFixed(1) : v.toFixed(0)) + ' ' + u.label; }
 function fmtTemp(c) { return settings.tempUnit === 'F' ? (c * 9 / 5 + 32).toFixed(0) + '°F' : c.toFixed(1) + '°C'; }
 function fmtPrecip(mm) {
@@ -69,6 +72,7 @@ map.createPane('shade'); map.getPane('shade').style.zIndex = 350;
 map.createPane('particles'); map.getPane('particles').style.zIndex = 420;
 map.createPane('barbs'); map.getPane('barbs').style.zIndex = 430;
 map.createPane('isobars'); map.getPane('isobars').style.zIndex = 425; map.getPane('isobars').style.pointerEvents = 'none';
+map.createPane('pins'); map.getPane('pins').style.zIndex = 450;
 map.createPane('coast'); map.getPane('coast').style.zIndex = 400; map.getPane('coast').style.pointerEvents = 'none';
 const dataAttrib = 'Borders: Natural Earth';
 const esriAttrib = 'Basemap &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors';
@@ -629,7 +633,7 @@ function updateNotes() {
   const shade = effShade(), mi = minfo();
   sel.parentElement.style.display = shade === 'precip' ? '' : 'none';
   if (shade === 'precip' && settings.shade === 'refl') { /* precip shown instead of radar */ }
-  if (!st) return;
+  if (!st) { refreshPins(); return; }
   syncModelMenus();
   for (const o of sel.options) o.disabled = !pcpAvail(o.value, st);
   let txt = '';
@@ -655,6 +659,7 @@ function updateNotes() {
   }
   n.textContent = txt;
   drawLegend();
+  refreshPins();
 }
 $('shadeSel').value = settings.shade; $('pcpSel').value = settings.precipPeriod;
 $('shadeSel').onchange = e => { if (e.target.selectedOptions[0].disabled) { e.target.value = effShade(); return; } settings.shade = e.target.value; saveSettings(); if (field) pickIso(field); drawShade(); drawIsobars(); updateNotes(); };
@@ -774,8 +779,229 @@ function showTip(e) {
   tip.style.top = Math.max(4, Math.min(y, sz.y - tip.offsetHeight - 6)) + 'px';
 }
 map.on('mousemove', showTip);
-map.on('click', e => { if (L.Browser.touch) showTip(e); });   // tap-to-read on phones/tablets
 map.on('mouseout', () => tip.style.display = 'none');
+
+// ---------- dropped value pins (WeatherFront-style pills) ----------
+// Toggle lives in Additional Map Settings. Positions are kept in localStorage
+// (windPins). Values are recomputed live when the time, model, member, layer or
+// units change. A pin click removes that pin; "Clear pins" removes all of them.
+pinCtl = (function () {
+  const STORE = 'windPins', MAX = 80;
+  let list = [], seq = 0;
+
+  function load() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(STORE) || '[]');
+      if (!Array.isArray(raw)) return;
+      raw.forEach(p => {
+        if (p && Number.isFinite(+p.lat) && Number.isFinite(+p.lon))
+          list.push({ id: ++seq, lat: +p.lat, lon: +p.lon, marker: null });
+      });
+    } catch (e) {}
+  }
+  function save() {
+    try { localStorage.setItem(STORE, JSON.stringify(list.map(p => ({ lat: p.lat, lon: p.lon })))); } catch (e) {}
+  }
+  function rgba(c, a) { return c ? 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + (a == null ? 0.88 : a) + ')' : 'rgba(20,22,28,0.82)'; }
+  function ink(c) { return !c || (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) > 165 ? (c ? '#111' : '#fff') : '#fff'; }
+  function lutAt(lut, k) { k *= 3; return [lut[k], lut[k + 1], lut[k + 2]]; }
+  function speedColor(ms) { return lutAt(LUT, Math.min(100, Math.max(0, Math.round(ms * MS2KT)))); }
+  function tempColor(c) { return lutAt(TLUT, Math.min(120, Math.max(-40, Math.round(c * 9 / 5 + 32))) + 40); }
+  function mslColor(hpa) { return lutAt(MLUT, Math.min(1080, Math.max(870, Math.round(hpa))) - 870); }
+  function pcpColor(mm, period) {
+    if (mm == null) return null;
+    const k = pIndex(mm, pThresholds(period));
+    return k < 0 ? [70, 78, 90] : PCOL[k];
+  }
+  function reflColor(z) {
+    if (z == null) return [70, 78, 90];
+    const k = rIndex(z);
+    return k < 0 ? [70, 78, 90] : RCOL[k];
+  }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+
+  function ensureLayerData() {
+    if (!field || stale()) return;
+    const mode = effShade();
+    if (mode === 'precip') {
+      const p = effPeriod(); if (!p) return;
+      const img = p === 'total' ? null : pcpImg(p);
+      if (img === 'rad' && !field.rad) loadRad(field).then(refresh).catch(() => {});
+      else if (img === 'pcp' && !field.pcp) loadPcp(field).then(refresh).catch(() => {});
+    } else if (mode === 'refl' && hasRefl() && !field.rad) {
+      loadRad(field).then(refresh).catch(() => {});
+    }
+  }
+
+  function valueAt(lat, lon) {
+    if (!field || stale()) return { text: '—', color: null };
+    const mode = effShade(), st = field.st;
+    if (mode === 'off') return { text: '—', color: null };
+    if (mode === 'speed') {
+      const p = sample(lat, lon); if (!p) return { text: '—', color: null };
+      const ms = Math.hypot(p[0], p[1]);
+      return { text: fmtSpeed(ms), color: speedColor(ms) };
+    }
+    if (mode === 'gust') {
+      // IFS/AIFS/ENS have no gust at +0 h (gustPeriod is null). NOAA may have a 0-hour "at valid time" gust.
+      if (st.gMax === undefined || st.gustPeriod == null) return { text: '—', color: null };
+      const gs = sampleGust(lat, lon); if (gs == null) return { text: '—', color: null };
+      return { text: fmtSpeed(gs), color: speedColor(gs) };
+    }
+    if (mode === 'temp') {
+      const t = sampleTemp(lat, lon); if (t == null) return { text: '—', color: null };
+      return { text: fmtTemp(t), color: tempColor(t) };
+    }
+    if (mode === 'precip') {
+      const p = effPeriod();
+      if (!p || st.hour === 0) return { text: '—', color: null };
+      const img = p === 'total' ? null : pcpImg(p);
+      if ((img === 'rad' && !field.rad) || (img === 'pcp' && !field.pcp)) return { text: '—', color: null };
+      const mm = p === 'total' ? sampleAcc(lat, lon) : samplePcp(lat, lon, p);
+      if (mm == null) return { text: '—', color: null };
+      return { text: fmtPrecip(mm), color: pcpColor(mm, p) };
+    }
+    if (mode === 'refl') {
+      if (!hasRefl() || !field.rad) return { text: '—', color: null };
+      const z = sampleRefl(lat, lon);
+      if (z == null) return { text: '—', color: null };
+      return { text: Math.round(z) + ' dBZ', color: reflColor(z) };
+    }
+    if (mode === 'msl' || mode === 'mslmin' || mode === 'mslmean' || mode === 'mslmax') {
+      const h = samplePres(lat, lon); if (h == null) return { text: '—', color: null };
+      return { text: Math.round(h) + ' hPa', color: mslColor(h) };
+    }
+    return { text: '—', color: null };
+  }
+
+  function htmlFor(v) {
+    const dc = v.color ? 'background:' + rgba(v.color, 1) : '';
+    return '<div class="vpin-inner"><div class="vpin-pill" style="background:' + rgba(v.color, 0.88) + ';color:' + ink(v.color) + '">' +
+      esc(v.text) + '<span class="vpin-x">×</span></div><div class="vpin-dot" style="' + dc + '"></div></div>';
+  }
+  function iconFor(v) {
+    return L.divIcon({ className: 'vpin', html: htmlFor(v), iconSize: [0, 0], iconAnchor: [0, 0] });
+  }
+  function makeMarker(p) {
+    const m = L.marker([p.lat, p.lon], { pane: 'pins', interactive: true, keyboard: false, icon: iconFor(valueAt(p.lat, p.lon)) });
+    m.on('click', e => { L.DomEvent.stop(e); remove(p.id); });
+    m.on('mousedown dblclick contextmenu', e => L.DomEvent.stop(e));
+    m.addTo(map);
+    p.marker = m;
+  }
+  function restyle(p) {
+    if (p.marker) p.marker.setIcon(iconFor(valueAt(p.lat, p.lon)));
+  }
+  function drawingToolOn() { return !!(window._drawDebug && window._drawDebug.tool); }
+  function syncCursor() {
+    map.getContainer().classList.toggle('drop-pins', !!settings.dropPins && !drawingToolOn());
+  }
+  function syncUI() {
+    const on = $('pinOn'), clear = $('pinClear'), count = $('pinCount');
+    if (on) on.checked = !!settings.dropPins;
+    if (clear) clear.disabled = !list.length;
+    if (count) count.textContent = list.length ? (list.length + (list.length === 1 ? ' pin' : ' pins')) : '';
+    syncCursor();
+  }
+  function refresh() { ensureLayerData(); list.forEach(restyle); syncUI(); }
+  function add(lat, lon) {
+    while (list.length >= MAX) {
+      const old = list.shift();
+      if (old && old.marker) map.removeLayer(old.marker);
+    }
+    const p = { id: ++seq, lat: +lat, lon: +lon, marker: null };
+    list.push(p);
+    makeMarker(p);
+    save();
+    syncUI();
+  }
+  function remove(id) {
+    const i = list.findIndex(p => p.id === id);
+    if (i < 0) return;
+    if (list[i].marker) map.removeLayer(list[i].marker);
+    list.splice(i, 1);
+    save();
+    syncUI();
+  }
+  function clear() {
+    list.forEach(p => { if (p.marker) map.removeLayer(p.marker); });
+    list = [];
+    save();
+    syncUI();
+  }
+  function setEnabled(on) {
+    settings.dropPins = !!on;
+    saveSettings();
+    syncUI();
+  }
+  function rrect(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+  function drawToCanvas(ctx, MR) {
+    if (!list.length) return;
+    const box = map.getContainer().getBoundingClientRect();
+    const ox = box.left - MR.left, oy = box.top - MR.top;
+    ctx.save();
+    ctx.font = '700 15px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const p of list) {
+      const pt = map.latLngToContainerPoint([p.lat, p.lon]);
+      const x = pt.x + ox, y = pt.y + oy;
+      if (x < -60 || y < -60 || x > box.width + 60 || y > box.height + 60) continue;
+      const v = valueAt(p.lat, p.lon);
+      const tw = ctx.measureText(v.text).width;
+      const pw = tw + 20, ph = 24;
+      const px = x - pw / 2, py = y - ph - 12;
+      ctx.shadowColor = 'rgba(0,0,0,0.6)';
+      ctx.shadowBlur = 4;
+      ctx.shadowOffsetY = 1;
+      ctx.fillStyle = rgba(v.color, 0.88);
+      rrect(ctx, px, py, pw, ph, ph / 2);
+      ctx.fill();
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetY = 0;
+      ctx.fillStyle = ink(v.color);
+      ctx.fillText(v.text, x, py + ph / 2);
+      ctx.beginPath();
+      ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = v.color ? rgba(v.color, 1) : '#fff';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function onMapClick(e) {
+    if (!settings.dropPins) {
+      if (L.Browser.touch) showTip(e);
+      return;
+    }
+    if (drawingToolOn()) return;
+    add(e.latlng.lat, e.latlng.lng);
+  }
+  function bind() {
+    load();
+    list.forEach(p => { if (!p.marker) makeMarker(p); });
+    $('pinOn').checked = !!settings.dropPins;
+    $('pinOn').onchange = e => setEnabled(e.target.checked);
+    $('pinClear').onclick = clear;
+    map.on('click', onMapClick);
+    syncUI();
+  }
+  return { refresh, add, remove, clear, setEnabled, drawToCanvas, syncCursor, syncUI, bind,
+    get list() { return list; } };
+})();
+pinCtl.bind();
 
 // ---------- "Additional Map Settings" menu (bottom-left) ----------
 const hoverUI = (function () {
@@ -878,7 +1104,7 @@ function drawLegend() {
     for (const k in els) { $(els[k]).value = settings[k]; if (out[k]) $('o' + els[k].slice(1)).textContent = out[k](settings[k]); }
   }
   function apply(k) {
-    if (strings.includes(k)) { drawLegend(); tip.style.display = 'none'; if (k === 'precipUnit') drawShade(); }
+    if (strings.includes(k)) { drawLegend(); tip.style.display = 'none'; if (k === 'precipUnit') drawShade(); refreshPins(); }
     if (k === 'density' || k === 'speed') { if (meta) resetParticles(); }
     if (k === 'width' || k === 'trail') { if (meta) partCv.getContext('2d').clearRect(0, 0, partCv.width, partCv.height); }
   }
@@ -890,7 +1116,7 @@ function drawLegend() {
     });
   }
   $('sReset').onclick = () => {
-    Object.assign(settings, DEFAULTS); sync(); saveSettings(); hoverUI.sync();
+    Object.assign(settings, DEFAULTS); sync(); saveSettings(); hoverUI.sync(); refreshPins();
     $('shadeSel').value = effShade(); $('pcpSel').value = settings.precipPeriod;
     $('tParticles').checked = settings.particles; $('tBarbs').checked = settings.barbs; $('tIsobars').checked = settings.isobars;
     if (meta) { resetParticles(); redrawStatic(); updateNotes(); } else drawLegend();
@@ -1021,12 +1247,12 @@ fetch(DATA_BASE + 'index.json', { cache: 'no-cache' }).then(r => r.json()).then(
   await setModel(want, null);
   loop();
 });
-window._app = { map, settings, dark, hoverUI,
+window._app = { map, settings, dark, hoverUI, pins: pinCtl,
   get basemapCredit() { return map.hasLayer(sat) ? 'Esri, Maxar, Earthstar Geographics' : 'Esri, HERE, Garmin, © OpenStreetMap contributors'; },
   get modelName() { return isEnsMember() ? 'ECMWF ENS · member ' + memberNum() : (MODEL ? MODEL.name : 'ECMWF'); },
   get modelKey() { return MODEL ? MODEL.key : 'ifs'; },
   get isoOn() { return isoOn(); },
   get dataCredit() { return minfo().credit; } };   // shared with draw.js
-window._windDebug = { map, sample, sampleGust, sampleTemp, samplePres, samplePcp, sampleRefl, settings, openRun, setEnsView, setEnsMember,
+window._windDebug = { map, sample, sampleGust, sampleTemp, samplePres, samplePcp, sampleRefl, settings, openRun, setEnsView, setEnsMember, pins: pinCtl,
   get stepIdx() { return stepIdx; }, get field() { return field; }, get meta() { return meta; }, get index() { return INDEX; }, get model() { return MODEL; }, setModel };
 })();

@@ -114,6 +114,10 @@
         <label><input type="radio" name="hStyle" id="hDetailed" value="detailed"> Detailed <span class="lnote">(extra units, gust/precip period)</span></label>
       </div>
     </div>
+    <div class="amsHead amsDrawHead">Drop pins</div>
+    <label class="amsMaster"><input type="checkbox" id="pinOn"> Drop pins on click</label>
+    <div class="lnote" id="pinHint">Click the map to drop a label of the current layer's value. Click a pin to remove it. Values follow the time, model, member and units you pick.</div>
+    <div class="pinActs"><button id="pinClear" disabled>Clear pins</button><span class="lnote" id="pinCount"></span></div>
     <div class="amsHead amsDrawHead">Borders &amp; lines</div>
     <button id="openLines" class="amsBig">▦ Borders, counties, grid &amp; basemap…</button>
     <div class="amsHead amsDrawHead">Drawing</div>

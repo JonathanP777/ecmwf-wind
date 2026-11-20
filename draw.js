@@ -249,6 +249,7 @@ function setTool(t) {
   bar.querySelectorAll('.dt').forEach(b => b.classList.toggle('on', b.dataset.t === tool));
   map.getContainer().classList.toggle('draw-select', tool === 'select');
   map.getContainer().classList.toggle('draw-active', !!tool && tool !== 'select');
+  if (window._app && window._app.pins) window._app.pins.syncCursor();
   if (tool && !opts.visible) setVisible(true);
   const freehand = FREEHAND.includes(tool);
   if (freehand) { map.dragging.disable(); map.touchZoom.disable(); } else { map.dragging.enable(); map.touchZoom.enable(); }
@@ -465,6 +466,8 @@ async function renderPNG(withTiles) {
     }
     ctx.restore();
   }
+  // dropped value pins (HTML markers are not captured above)
+  if (window._app && window._app.pins) window._app.pins.drawToCanvas(ctx, MR);
   // legend (as on screen)
   const lg = $('legend');
   if (lg && getComputedStyle(lg).display !== 'none' && !document.body.classList.contains('drawing-mobile')) {
