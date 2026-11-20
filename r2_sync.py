@@ -34,14 +34,32 @@ def run_prefixes(ix):
         for r in m.get("runs", []):
             for d in set(r.get("dirs", [])) | {r.get("dir", r["id"])}:
                 out.add(m["path"] + d + "/")
+        mem = m.get("members")
+        if mem:
+            out.add(mem.get("path", "ens/members/") + mem["dir"] + "/")
+    return out
+
+def member_prefixes(ix):
+    """complete individual-member run folders listed in an index (not in-progress builds)."""
+    out = set()
+    for m in (ix or {}).get("models", []):
+        mem = m.get("members")
+        if mem:
+            out.add(mem.get("path", "ens/members/") + mem["dir"] + "/")
     return out
 
 def put(s3, bucket, key, path, **extra):
+    import gzip
     ctype = mimetypes.guess_type(key)[0] or "application/octet-stream"
     # run files never change once published; meta.json/index.json are re-checked by the site
     cc = "no-cache" if key.endswith(("meta.json", "index.json")) else "public, max-age=86400"
     with open(path, "rb") as f:
-        s3.put_object(Bucket=bucket, Key=key, Body=f, ContentType=ctype, CacheControl=cc, **extra)
+        body = f.read()
+    # member isobar JSON is repetitive; gzip it so 50 members stay a small share of the bucket
+    if key.startswith("ens/members/") and key.endswith(".json") and "/isobars_" in key:
+        body = gzip.compress(body, compresslevel=6)
+        extra = dict(extra, ContentEncoding="gzip")
+    s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType=ctype, CacheControl=cc, **extra)
 
 def frag_keys():
     """model keys this publish job is allowed to change (from frag/*.json)."""
@@ -105,6 +123,13 @@ def complete_runs(ix, remote):
         if len(ok) < len(m["runs"]):
             print(f"warning: {m['key']}: {len(m['runs']) - len(ok)} run(s) not in the bucket, left out of the index")
         m["runs"] = ok
+    for m in ix["models"]:
+        mem = m.get("members")
+        if not mem: continue
+        path = mem.get("path", "ens/members/") + mem["dir"] + "/meta.json"
+        if path not in remote:
+            print(f"warning: {m['key']}: individual members of {mem.get('id')} not in the bucket, left out of the index")
+            m.pop("members", None)
     ix["models"] = [m for m in ix["models"] if m["runs"]]
     if not ix["models"]: raise SystemExit("no model has any run in the bucket - not publishing")
     ifs = next((m for m in ix["models"] if m["key"] == "ifs"), None)
@@ -154,12 +179,16 @@ def publish(root):
             raise
     else:
         raise SystemExit("could not publish index.json: too many colliding writes")
-    # only delete rolled-off folders of the models this job published
+    # only delete rolled-off folders of the models this job published.
+    # ens/members/ in-progress builds are not in the index yet, so they are never generic-GC'd;
+    # we only delete a previous complete member run after a newer one is published.
     keep = run_prefixes(ix) | run_prefixes(prev)
     roots = model_roots((ix, prev, local), keys)
+    retired_members = member_prefixes(prev) - member_prefixes(ix)
     stale = [k for k in remote if k != "index.json"
-             and any(k.startswith(p) for p in roots)
-             and not any(k.startswith(p) for p in keep)]
+             and not (k.startswith("ens/members/") and not any(k.startswith(p) for p in retired_members))
+             and ((any(k.startswith(p) for p in roots) and not any(k.startswith(p) for p in keep))
+                  or any(k.startswith(p) for p in retired_members))]
     for i in range(0, len(stale), 1000):
         s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in stale[i:i + 1000]], "Quiet": True})
     left = {k: v for k, v in remote.items() if k not in set(stale)}

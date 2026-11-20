@@ -107,8 +107,9 @@ alpha channel of `wind_XXX.png` to mark the model area. There is also `isobars_X
 - The **9 older runs** are published at half resolution (0.5° or ~6 km, every other grid point).
 
 Measured sizes (20 Nov 2026): IFS 0.99 GB, AIFS 0.61 GB, HRRR 0.39 GB, RRFS 0.78 GB, ENS 0.39 GB
-for 10 runs each (about 3.28 GB in total; a little more while a refresh keeps the previous
-folders, well inside R2's 10 GB free storage).
+for 10 runs each, plus about 1.2–1.5 GB for the 50 individual members of the latest ENS run
+(0.5°, 6-hourly). That is about 4.5–4.8 GB in total, or briefly around 6 GB while a new
+member run is uploading before the previous one is deleted, well inside R2's 10 GB free storage.
 
 ## Live website
 
@@ -217,13 +218,15 @@ Use the **Model** menu to switch between:
 - **ECMWF AIFS**, ECMWF's AI model ([aifs-single](https://www.ecmwf.int/en/forecasts/dataset/aifs-machine-learning-data)). Every run goes to +360 h in 6-hourly steps. AIFS has no wind-gust data and no 1 h or 3 h precipitation totals, so those menu items are greyed out.
 - **NOAA HRRR** ([High-Resolution Rapid Refresh](https://rapidrefresh.noaa.gov/hrrr/)), 3 km, contiguous US, new run every hour.
 - **NOAA RRFS** ([Rapid Refresh Forecast System](https://registry.opendata.aws/noaa-rrfs-ops/)), 3 km, contiguous US; NOAA's new convection-allowing model that replaced the NAM, HiresW, HREF and SREF in October 2026.
-- **ECMWF ENS** (the Ensemble, also called EPS). Open data publishes the 50 perturbed members (there is no control run in the open files). The main layer is **ensemble min MSLP**: at every point, the lowest sea-level pressure among those 50 members, shown with a WeatherBell-style colour scale, contours and H/L markers. Ensemble mean and max MSLP are also available (they come in the same file, so they cost almost nothing extra). ENS has no wind, temperature, precipitation or radar — those menu items are hidden. Steps match IFS: 3-hourly to +144 h, then 6-hourly to +360 h (00/12Z) or +144 h (06/18Z).
+- **ECMWF ENS** (the Ensemble, also called EPS). Open data publishes the 50 perturbed members (there is no control run in the open files). The main layer is **ensemble min MSLP**: at every point, the lowest sea-level pressure among those 50 members, shown with a WeatherBell-style colour scale, contours and H/L markers. Ensemble mean and max MSLP are also available (they come in the same file, so they cost almost nothing extra). Those “all members together” maps keep the past 10 runs, with the same steps as IFS (3-hourly to +144 h, then 6-hourly to +360 h on 00/12Z runs, or +144 h on 06/18Z).
+  Under **View**, you can also open an **Individual member** and step through members 1–50 (previous / next buttons, or type a number). That view has wind speed (with the animated particles and barbs), wind gust and sea-level pressure with isobars — the same 50 members, just one at a time. To keep storage down it is only built for the latest complete run, at 0.5° and 6-hourly (00/12Z to +360 h, 06/18Z to +144 h). The site keeps showing the previous member run until the new one is fully built. Open data has no control member. Temperature, precipitation and radar are not in this view.
 
-Each model's menus only offer what that model has. When you switch models, the map tries to stay on the same valid time. The site also remembers the last model you picked. A link with `?model=aifs` (or `hrrr`, `rrfs`, `ens`) opens that model directly. Outside the HRRR/RRFS area the readout says so.
+Each model's menus only offer what that model has. When you switch models, the map tries to stay on the same valid time. The site also remembers the last model you picked. A link with `?model=aifs` (or `hrrr`, `rrfs`, `ens`) opens that model directly. `?model=ens&member=7` opens ensemble member 7. Outside the HRRR/RRFS area the readout says so.
 
 Data layout (made by `update_data.py`):
 - `index.json` (`"layout": 3`) keeps `generated` and `runs` (the IFS runs, for older pages). It also has `models`, with one entry per model: `key`, `name`, `path` (relative: `runs/`, `aifs/runs/`, `hrrr/runs/`, `rrfs/runs/`, `ens/runs/`), `gust`, `refl`, `pcp`, `wind`, `ens`, `global`, `region` (regional models: `name`, `bounds`, `outline`) and `runs`.
 - Every run entry has `dir` (the folder the site shows: `<run id>/0p25` or `0p50` for ECMWF, `<run id>/3km` or `6km` for HRRR/RRFS), `dirs` (all folders kept for that run), `res`, `resLabel`, `nSteps` and `maxHour`. A run's files are at `DATA_BASE + path + dir + '/'`, e.g. `hrrr/runs/2026110301/3km/meta.json`.
+- ENS individual members (latest complete run only) are listed on the ENS model entry as `members` (`path` `ens/members/`, `dir` `<run id>/0p50`, `nMembers`, `nSteps`, `maxHour`). Files are `ens/members/<run id>/0p50/mXX/wind_XXX.png` (RGBA: u, v, gust, MSLP) and `isobars_XXX.json`, with `meta.json` in the `0p50` folder (written last).
 - Health check: each model should have up to 10 runs, the newest with a full-resolution `dir`; `generated` should be less than ~2 h old. After a new model is added, its 10 runs may take a few hourly jobs to fill in.
 
 To add another model, add an entry to `MODELS` in `update_data.py`, to `MODEL_INFO` in `app.js` and to the job list in `deploy.yml` (or give it its own workflow if a build can take long enough to delay the others).

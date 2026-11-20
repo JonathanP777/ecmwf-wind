@@ -28,6 +28,7 @@ const $ = id => document.getElementById(id);
 // ---------- user settings (saved in localStorage) ----------
 const DEFAULTS = { units: 'kt', tempUnit: 'F', precipUnit: 'in', shade: 'speed', precipPeriod: '3',
   speed: 0.4, width: 1.0, trail: 6, density: 1.0, particles: true, barbs: true, isobars: false, ensIso: true,
+  ensView: 'stats', ensMember: 1,
   // pinpoint readout options ("Additional Map Settings" menu)
   // hoverAuto: show the variable(s) matching the displayed layer; hv* = extra (or, with auto off, the full manual set)
   hoverOn: true, hoverAuto: true, hoverStyle: 'compact', hvSpeed: false, hvDir: false, hvGust: false, hvTemp: false,
@@ -44,7 +45,9 @@ try {
   const saved = JSON.parse(localStorage.getItem('windSettings') || '{}');
   for (const k in DEFAULTS) if (k in saved && typeof saved[k] === typeof DEFAULTS[k]) settings[k] = saved[k];
   if (!UNITS[settings.units]) settings.units = DEFAULTS.units;
-  if (!['speed', 'gust', 'temp', 'precip', 'refl', 'mslmin', 'mslmean', 'mslmax', 'off'].includes(settings.shade)) settings.shade = DEFAULTS.shade;
+  if (!['speed', 'gust', 'temp', 'precip', 'refl', 'msl', 'mslmin', 'mslmean', 'mslmax', 'off'].includes(settings.shade)) settings.shade = DEFAULTS.shade;
+  if (settings.ensView !== 'member') settings.ensView = 'stats';
+  settings.ensMember = Math.min(50, Math.max(1, parseInt(settings.ensMember, 10) || 1));
   if (!['1', '3', '6', '24', 'total'].includes(settings.precipPeriod)) settings.precipPeriod = DEFAULTS.precipPeriod;
   if (!['F', 'C'].includes(settings.tempUnit)) settings.tempUnit = 'F';
   if (!['in', 'mm'].includes(settings.precipUnit)) settings.precipUnit = 'in';
@@ -117,11 +120,18 @@ function loadImg(src) {
 function cacheGet(k) { if (!cache.has(k)) return null; const f = cache.get(k); cache.delete(k); cache.set(k, f); return f; }
 function cachePut(k, f) { cache.set(k, f); while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value); }
 async function loadStep(i) {
-  const key = MODEL.key + ':' + meta.id + ':' + meta.res + ':' + i;
+  const key = MODEL.key + ':' + meta.id + ':' + meta.res + ':' + (isEnsMember() ? 'm' + memberNum() + ':' : '') + i;
   const hit = cacheGet(key); if (hit) return hit;
   const st = meta.steps[i], n = String(st.hour).padStart(3, '0'), base = runBase(), bq = bust();
   // base + cache-buster are kept with the step so a late extra layer load still reads this run's folder
-  if (isEns()) {
+  if (isEnsMember()) {
+    const mem = String(memberNum()).padStart(2, '0');
+    const mb = memberBase(), bq2 = bust();
+    const w = await loadImg(mb + 'm' + mem + '/wind_' + n + '.png' + bq2);
+    const f = { key, st: memberStep(st), w: w.w, h: w.h, ens: null, wind: w.px, met: null, pcp: null, rad: null, iso: null, isoAll: null, base: mb + 'm' + mem + '/', bq: bq2 };
+    cachePut(key, f); return f;
+  }
+  if (isEnsStats()) {
     const e = await loadImg(base + 'ens_' + n + '.png' + bq);
     const f = { key, st, w: e.w, h: e.h, ens: e.px, wind: null, met: null, pcp: null, rad: null, iso: null, isoAll: null, base, bq };
     cachePut(key, f); return f;
@@ -196,7 +206,12 @@ function sampleEns(lat, lon, ch) {
   return lin(bil(field.ens, c, ch), lo, hi);
 }
 function samplePres(lat, lon) {
-  if (isEns()) return sampleEns(lat, lon, ({ mslmin: 0, mslmean: 1, mslmax: 2 })[effShade()] || 0);
+  if (isEnsMember()) {
+    const c = cell(lat, lon); if (!c || !field.wind) return null;
+    const lo = (meta && meta.pLo != null) ? meta.pLo : 870, hi = (meta && meta.pHi != null) ? meta.pHi : 1080;
+    return lin(bil(field.wind, c, 3), lo, hi);
+  }
+  if (isEnsStats()) return sampleEns(lat, lon, ({ mslmin: 0, mslmean: 1, mslmax: 2 })[effShade()] || 0);
   const c = cell(lat, lon); return c && field.met ? lin(bil(field.met, c, 1), field.st.pMin, field.st.pMax) : null;
 }
 function sampleAcc(lat, lon) { const c = cell(lat, lon); return c ? sq(bil(field.met, c, 2), field.st.aMax) : null; }
@@ -219,19 +234,40 @@ function pcpImg(p) { return PCH[p] ? PCH[p][2] : null; }
 function pcpAvail(p, st) { if (MODEL && !MODEL.pcp.includes(p)) return false; return p === 'total' ? st.hour > 0 : st[PCH[p][1]] != null; }
 // colour layer actually shown: a layer the current model lacks (e.g. gust in AIFS) falls back to wind speed
 // (the saved choice is kept, so switching back to a model that has it brings it back)
-function hasGust() { return !MODEL || MODEL.gust; }
+function hasGust() { return isEnsMember() || !MODEL || MODEL.gust; }
 function hasRefl() { return !!(MODEL && MODEL.refl); }
 function isEns() { return !!(MODEL && MODEL.ens); }
-function hasWind() { return !MODEL || MODEL.wind !== false; }
+function ensMembers() { return (MODEL && MODEL.members) || null; }
+function isEnsMember() { return isEns() && settings.ensView === 'member' && !!ensMembers(); }
+function isEnsStats() { return isEns() && !isEnsMember(); }
+function hasWind() { return isEnsMember() || !MODEL || MODEL.wind !== false; }
+function memberNum() {
+  const n = (ensMembers() && ensMembers().nMembers) || 50;
+  return Math.min(n, Math.max(1, parseInt(settings.ensMember, 10) || 1));
+}
+function memberBase() {
+  const m = ensMembers();
+  const path = (m && m.path) || 'ens/members/';
+  return (/^(https?:|data\/)/.test(path) ? path : DATA_BASE + path) + m.dir + '/';
+}
+function memberStep(st) {
+  // meta.steps[i].m is [uMin,uMax,vMin,vMax,gMin,gMax] per member (0-based)
+  const sc = st && st.m && st.m[memberNum() - 1];
+  if (!sc) return st;
+  return { hour: st.hour, valid: st.valid, gustPeriod: st.gustPeriod,
+    uMin: sc[0], uMax: sc[1], vMin: sc[2], vMax: sc[3], gMin: sc[4], gMax: sc[5] };
+}
 const ENS_SHADES = ['mslmin', 'mslmean', 'mslmax'];
+const MEMBER_SHADES = ['speed', 'gust', 'msl', 'off'];
 function effShade() {
-  if (isEns()) return ENS_SHADES.includes(settings.shade) ? settings.shade : 'mslmin';
-  if (ENS_SHADES.includes(settings.shade)) return 'speed';
+  if (isEnsMember()) return MEMBER_SHADES.includes(settings.shade) ? settings.shade : 'speed';
+  if (isEnsStats()) return ENS_SHADES.includes(settings.shade) ? settings.shade : 'mslmin';
+  if (ENS_SHADES.includes(settings.shade) || settings.shade === 'msl') return 'speed';
   if (settings.shade === 'gust' && !hasGust()) return 'speed';
   if (settings.shade === 'refl' && !hasRefl()) return 'precip';
   return settings.shade;
 }
-function isoOn() { return isEns() ? settings.ensIso : settings.isobars; }
+function isoOn() { return isEnsStats() ? settings.ensIso : settings.isobars; }
 function effPeriod() {
   const st = meta && meta.steps[stepIdx]; if (!st) return settings.precipPeriod;
   const want = settings.precipPeriod;
@@ -324,9 +360,9 @@ function drawShade() {
         const z = sampleRefl(lat, lon); if (z === null) continue;
         const k = rIndex(z); if (k < 0) continue;
         [r, gg, b] = RCOL[k]; a = 200;
-      } else if (ENS_SHADES.includes(mode)) {
-        const ch = mode === 'mslmin' ? 0 : mode === 'mslmean' ? 1 : 2;
-        const hpa = sampleEns(lat, lon, ch); if (hpa === null) continue;
+      } else if (mode === 'msl' || ENS_SHADES.includes(mode)) {
+        const hpa = mode === 'msl' ? samplePres(lat, lon) : sampleEns(lat, lon, mode === 'mslmin' ? 0 : mode === 'mslmean' ? 1 : 2);
+        if (hpa === null) continue;
         const k = (Math.min(1080, Math.max(870, Math.round(hpa))) - 870) * 3;
         r = MLUT[k]; gg = MLUT[k + 1]; b = MLUT[k + 2]; a = 200;
       } else {
@@ -541,21 +577,42 @@ $('slider').oninput = e => setStep(+e.target.value);
 // menu entries the current model doesn't have are greyed out with a short reason
 const PCP_LABELS = { '1': '1 h total', '3': '3 h total', '6': '6 h total', '24': '24 h total', total: 'Total since run start' };
 function syncModelMenus() {
-  const mi = minfo(), sh = $('shadeSel'), ps = $('pcpSel'), ens = isEns();
+  const mi = minfo(), sh = $('shadeSel'), ps = $('pcpSel'), ens = isEns(), mem = isEnsMember();
   document.body.classList.toggle('ens-model', ens);
+  document.body.classList.toggle('ens-member', mem);
   const labels = { speed: 'Wind speed', gust: 'Wind gust', temp: 'Temperature (2 m)', precip: 'Precipitation',
-    refl: 'Radar (reflectivity)', mslmin: 'Ensemble min MSLP', mslmean: 'Ensemble mean MSLP', mslmax: 'Ensemble max MSLP', off: 'Off' };
+    refl: 'Radar (reflectivity)', msl: 'Sea-level pressure', mslmin: 'Ensemble min MSLP', mslmean: 'Ensemble mean MSLP', mslmax: 'Ensemble max MSLP', off: 'Off' };
   for (const o of sh.options) {
     const isEnsOpt = ENS_SHADES.includes(o.value);
-    const ok = o.value === 'off' || (ens ? isEnsOpt : !isEnsOpt && (o.value !== 'gust' || hasGust()) && (o.value !== 'refl' || hasRefl()));
+    const isMemOpt = MEMBER_SHADES.includes(o.value);
+    let ok;
+    if (mem) ok = isMemOpt;
+    else if (ens) ok = o.value === 'off' || isEnsOpt;
+    else ok = o.value === 'off' || (!isEnsOpt && o.value !== 'msl' && (o.value !== 'gust' || hasGust()) && (o.value !== 'refl' || hasRefl()));
     o.disabled = !ok;
-    o.hidden = ens ? !(isEnsOpt || o.value === 'off') : isEnsOpt;
+    o.hidden = mem ? !isMemOpt : (ens ? !(isEnsOpt || o.value === 'off') : (isEnsOpt || o.value === 'msl'));
     let t = labels[o.value] || o.value;
     if (!ok && o.value === 'gust') t = 'Wind gust (not in ' + mi.short + ')';
     if (!ok && o.value === 'refl') t = 'Radar (not in ' + mi.short + ')';
     o.textContent = t;
   }
   sh.value = effShade();
+  const vr = $('ensViewRow'), mr = $('ensMemberRow');
+  if (vr) vr.hidden = !ens;
+  if (mr) mr.hidden = !mem;
+  if (ens) {
+    $('ensViewSel').value = mem ? 'member' : 'stats';
+    const opt = $('ensViewSel').querySelector('option[value="member"]');
+    if (opt) {
+      opt.disabled = !ensMembers();
+      opt.textContent = ensMembers() ? 'Individual member' : 'Individual member (still being prepared)';
+    }
+  }
+  if (mem) {
+    const n = ensMembers().nMembers || 50;
+    $('ensMember').min = 1; $('ensMember').max = n; $('ensMember').value = memberNum();
+    $('ensMemberOf').textContent = 'of ' + n;
+  }
   for (const o of ps.options) {
     const has = !MODEL || MODEL.pcp.includes(o.value);
     o.textContent = PCP_LABELS[o.value] + (has ? '' : ' (not in ' + mi.short + ': ' + mi.stepTxt + ' data)');
@@ -581,6 +638,7 @@ function updateNotes() {
   else if (ENS_SHADES.includes(shade) && !isEns()) txt = 'Ensemble MSLP is only in ENS: showing wind speed';
   else if (shade === 'gust') txt = st.gustPeriod ? 'max gust in previous ' + st.gustPeriod + ' h' : st.gustPeriod === 0 ? 'gust at the valid time' : 'no gust at +0h (starts +3h)';
   else if (shade === 'refl') txt = 'simulated composite radar reflectivity (dBZ)';
+  else if (shade === 'msl') txt = 'sea-level pressure of ensemble member ' + memberNum();
   else if (shade === 'mslmin') txt = 'lowest sea-level pressure among the ' + ((st && st.nMembers) || 50) + ' ensemble members at each point';
   else if (shade === 'mslmean') txt = 'mean sea-level pressure of the ' + ((st && st.nMembers) || 50) + ' ensemble members';
   else if (shade === 'mslmax') txt = 'highest sea-level pressure among the ' + ((st && st.nMembers) || 50) + ' ensemble members at each point';
@@ -604,7 +662,7 @@ $('pcpSel').onchange = e => { if (MODEL && !MODEL.pcp.includes(e.target.value)) 
 [['tParticles', 'particles'], ['tBarbs', 'barbs'], ['tIsobars', 'isobars']].forEach(([id, k]) => {
   $(id).checked = k === 'isobars' ? isoOn() : settings[k];
   $(id).onchange = e => {
-    if (k === 'isobars' && isEns()) settings.ensIso = e.target.checked;
+    if (k === 'isobars' && isEnsStats()) settings.ensIso = e.target.checked;
     else settings[k] = e.target.checked;
     saveSettings();
     if (k === 'particles') partCv.getContext('2d').clearRect(0, 0, partCv.width, partCv.height);
@@ -626,19 +684,20 @@ function fmtCoord(la, lo) {
 function autoVars() {
   const a = new Set();
   if (!settings.hoverAuto) return a;
-  if (isEns()) { a.add('hvPres'); return a; }
+  if (isEnsStats()) { a.add('hvPres'); return a; }
   const sh = effShade();
   if (sh === 'speed' || sh === 'off') { a.add('hvSpeed'); a.add('hvDir'); }
   if (sh === 'gust') a.add('hvGust');
   if (sh === 'temp') a.add('hvTemp');
   if (sh === 'precip') a.add('hvPcp');
   if (sh === 'refl') a.add('hvRefl');
-  if (isoOn()) a.add('hvPres');
+  if (sh === 'msl' || isoOn()) a.add('hvPres');
   return a;
 }
 // only variables the current model has (AIFS: no gust; ENS: pressure only)
 function modelHas(k) {
-  if (isEns()) return k === 'hvPres' || k === 'hvCoord';
+  if (isEnsMember()) return k === 'hvSpeed' || k === 'hvDir' || k === 'hvGust' || k === 'hvPres' || k === 'hvCoord';
+  if (isEnsStats()) return k === 'hvPres' || k === 'hvCoord';
   if (k === 'hvGust') return hasGust();
   if (k === 'hvRefl') return hasRefl();
   if (k === 'hvSpeed' || k === 'hvDir') return hasWind();
@@ -664,7 +723,7 @@ function readoutRows(la, lo) {
     rows.push(['Temp', fmtTemp(c) + sub(settings.tempUnit === 'F' ? c.toFixed(1) + '°C' : (c * 9 / 5 + 32).toFixed(0) + '°F')]);
   }
   if (shown('hvPres')) {
-    if (isEns()) {
+    if (isEnsStats()) {
       const nm = (field.st && field.st.nMembers) || 50;
       const lab = { mslmin: 'Min MSLP', mslmean: 'Mean MSLP', mslmax: 'Max MSLP' }[effShade()] || 'MSLP';
       const v = samplePres(la, lo);
@@ -782,13 +841,16 @@ function drawLegend() {
     const bw = W / RTHR.length;
     RTHR.forEach((t, k) => { ctx.fillStyle = `rgb(${RCOL[k].join(',')})`; ctx.fillRect(k * bw, 0, bw - 1, c.height); if (k % 2 === 0) tick(k * bw + 2, t); });
     $('legendTitle').textContent = 'Radar reflectivity, composite (dBZ)';
-  } else if (ENS_SHADES.includes(mode)) {
+  } else if (mode === 'msl' || ENS_SHADES.includes(mode)) {
     const lo = 870, hi = 1080;
     for (let x = 0; x < W; x++) { const k = Math.round(lo + x / (W - 1) * (hi - lo)); ctx.fillStyle = `rgb(${MLUT[(k - lo) * 3]},${MLUT[(k - lo) * 3 + 1]},${MLUT[(k - lo) * 3 + 2]})`; ctx.fillRect(x, 0, 1, c.height); }
     MSL_TICKS.filter(t => t >= lo && t <= hi).forEach(t => tick((t - lo) / (hi - lo) * W, t));
-    const lab = { mslmin: 'Ensemble min MSLP', mslmean: 'Ensemble mean MSLP', mslmax: 'Ensemble max MSLP' }[mode];
-    const nm = (meta && meta.steps[stepIdx] && meta.steps[stepIdx].nMembers) || 50;
-    $('legendTitle').textContent = lab + ' (hPa, ' + nm + ' members)';
+    if (mode === 'msl') $('legendTitle').textContent = 'Sea-level pressure (hPa, member ' + memberNum() + ')';
+    else {
+      const lab = { mslmin: 'Ensemble min MSLP', mslmean: 'Ensemble mean MSLP', mslmax: 'Ensemble max MSLP' }[mode];
+      const nm = (meta && meta.steps[stepIdx] && meta.steps[stepIdx].nMembers) || 50;
+      $('legendTitle').textContent = lab + ' (hPa, ' + nm + ' members)';
+    }
   } else if (mode === 'precip') {
     const per = effPeriod() || settings.precipPeriod, thr = pThresholds(per), bw = W / thr.length;
     thr.forEach((t, k) => { ctx.fillStyle = `rgb(${PCOL[k].join(',')})`; ctx.fillRect(k * bw, 0, bw - 1, c.height); if (k % 2 === 0) tick(k * bw + 2, t); });
@@ -838,11 +900,15 @@ function drawLegend() {
 
 // ---------- models & runs ----------
 async function openRun(id, keepValid) {
+  if (isEnsMember()) { id = ensMembers().id; $('runSel').value = id; }
   const entry = MODEL.runs.find(r => r.id === id);
-  const m = await fetch(modelBase() + runDir(id) + '/meta.json', { cache: 'no-cache' }).then(r => r.json());
+  const src = isEnsMember() ? (memberBase() + 'meta.json') : (modelBase() + runDir(id) + '/meta.json');
+  const m = await fetch(src, { cache: 'no-cache' }).then(r => r.json());
   meta = m; field = null;
   const latest = MODEL.runs[0].id === id;
-  $('runinfo').textContent = 'Model run ' + fmtTime(m.run) + (latest ? ' (latest)' : '') + ' · ' + (m.resLabel || m.res + '°') + ' grid';
+  let info = 'Model run ' + fmtTime(m.run) + (latest ? ' (latest)' : '') + ' · ' + (m.resLabel || m.res + '°') + ' grid';
+  if (isEnsMember()) info += ' · member ' + memberNum() + ' of ' + (m.nMembers || 50);
+  $('runinfo').textContent = info;
   const s = $('slider'); s.max = m.steps.length - 1;
   let idx = 0, note = '';
   if (keepValid) {
@@ -852,8 +918,12 @@ async function openRun(id, keepValid) {
     idx = best;
     const t0 = parseT(m.steps[0].valid).getTime(), t1 = parseT(m.steps[m.steps.length - 1].valid).getTime();
     if (bd === 0) note = 'Same valid time, +' + m.steps[idx].hour + 'h in this run';
-    else if (tv > t0 && tv < t1) note = 'No step at that exact time here (' + minfo().stepTxt + '): showing nearest, +' + m.steps[idx].hour + 'h';
-    else note = 'That valid time is outside this run (+0 to +' + entry.maxHour + 'h): showing nearest step';
+    else if (tv > t0 && tv < t1) note = 'No step at that exact time here (' + (isEnsMember() ? '6-hourly' : minfo().stepTxt) + '): showing nearest, +' + m.steps[idx].hour + 'h';
+    else note = 'That valid time is outside this run (+0 to +' + (entry && entry.maxHour) + 'h): showing nearest step';
+  }
+  if (isEnsMember()) {
+    const extra = 'Individual members are 0.5° and 6-hourly, and only available for this run.';
+    note = note ? (note + ' · ' + extra) : extra;
   }
   $('runNote').textContent = note;
   s.value = idx;
@@ -862,8 +932,34 @@ async function openRun(id, keepValid) {
 }
 $('runSel').onchange = e => {
   const keep = meta ? meta.steps[stepIdx].valid : null;
+  if (isEnsMember() && ensMembers() && e.target.value !== ensMembers().id) {
+    settings.ensView = 'stats'; saveSettings();
+  }
   openRun(e.target.value, keep);
 };
+async function setEnsView(view, keepValid) {
+  if (view === 'member' && !ensMembers()) view = 'stats';
+  const keep = keepValid !== undefined ? keepValid : (meta ? meta.steps[stepIdx].valid : null);
+  settings.ensView = view;
+  if (view === 'member' && ENS_SHADES.includes(settings.shade)) settings.shade = 'msl';
+  if (view === 'stats' && (MEMBER_SHADES.includes(settings.shade) && settings.shade !== 'off')) settings.shade = 'mslmin';
+  saveSettings();
+  syncModelMenus(); hoverUI.sync(); tip.style.display = 'none';
+  const id = (view === 'member' && ensMembers()) ? ensMembers().id : ($('runSel').value || MODEL.runs[0].id);
+  await openRun(id, keep);
+}
+async function setEnsMember(n) {
+  const max = (ensMembers() && ensMembers().nMembers) || 50;
+  settings.ensMember = Math.min(max, Math.max(1, parseInt(n, 10) || 1));
+  saveSettings();
+  if ($('ensMember')) $('ensMember').value = settings.ensMember;
+  if (!isEnsMember() || !meta) return;
+  field = null;
+  const latest = MODEL.runs[0] && MODEL.runs[0].id === meta.id;
+  $('runinfo').textContent = 'Model run ' + fmtTime(meta.run) + (latest ? ' (latest)' : '') + ' · ' + (meta.resLabel || meta.res + '°') + ' grid · member ' + memberNum() + ' of ' + (meta.nMembers || 50);
+  resetParticles();
+  await setStep(stepIdx);
+}
 function fillRuns() {
   const sel = $('runSel'); sel.innerHTML = '';
   MODEL.runs.forEach((r, k) => {
@@ -912,14 +1008,25 @@ fetch(DATA_BASE + 'index.json', { cache: 'no-cache' }).then(r => r.json()).then(
   ix.models.forEach(m => { const o = document.createElement('option'); o.value = m.key; o.textContent = minfo(m).label; ms.appendChild(o); });
   ms.parentElement.style.display = ix.models.length > 1 ? '' : 'none';
   let want = 'ifs';
-  try { want = new URLSearchParams(location.search).get('model') || localStorage.getItem('windModel') || 'ifs'; } catch (e) {}
+  try {
+    const q = new URLSearchParams(location.search);
+    want = q.get('model') || localStorage.getItem('windModel') || 'ifs';
+    if (q.get('member')) { settings.ensView = 'member'; settings.ensMember = parseInt(q.get('member'), 10) || 1; }
+  } catch (e) {}
   drawLegend();
+  $('ensViewSel').onchange = e => setEnsView(e.target.value);
+  $('ensMemberPrev').onclick = () => { const n = (ensMembers() && ensMembers().nMembers) || 50; setEnsMember(memberNum() <= 1 ? n : memberNum() - 1); };
+  $('ensMemberNext').onclick = () => { const n = (ensMembers() && ensMembers().nMembers) || 50; setEnsMember(memberNum() >= n ? 1 : memberNum() + 1); };
+  $('ensMember').onchange = e => setEnsMember(e.target.value);
   await setModel(want, null);
   loop();
 });
 window._app = { map, settings, dark, hoverUI,
-  get basemapCredit() { return map.hasLayer(sat) ? 'Esri, Maxar, Earthstar Geographics' : 'Esri, HERE, Garmin, © OpenStreetMap contributors'; }, get modelName() { return MODEL ? MODEL.name : 'ECMWF'; }, get modelKey() { return MODEL ? MODEL.key : 'ifs'; },
+  get basemapCredit() { return map.hasLayer(sat) ? 'Esri, Maxar, Earthstar Geographics' : 'Esri, HERE, Garmin, © OpenStreetMap contributors'; },
+  get modelName() { return isEnsMember() ? 'ECMWF ENS · member ' + memberNum() : (MODEL ? MODEL.name : 'ECMWF'); },
+  get modelKey() { return MODEL ? MODEL.key : 'ifs'; },
+  get isoOn() { return isoOn(); },
   get dataCredit() { return minfo().credit; } };   // shared with draw.js
-window._windDebug = { map, sample, sampleGust, sampleTemp, samplePres, samplePcp, sampleRefl, settings, openRun,
+window._windDebug = { map, sample, sampleGust, sampleTemp, samplePres, samplePcp, sampleRefl, settings, openRun, setEnsView, setEnsMember,
   get stepIdx() { return stepIdx; }, get field() { return field; }, get meta() { return meta; }, get index() { return INDEX; }, get model() { return MODEL; }, setModel };
 })();

@@ -9,8 +9,8 @@ html,body{margin:0;height:100%;background:#111;font-family:system-ui,-apple-syst
 #slider{flex:1}
 #play{background:#2c3e50;color:#fff;border:0;border-radius:4px;width:32px;height:26px;cursor:pointer}
 #stepLabel{min-width:42px;text-align:right;font-variant-numeric:tabular-nums}
-#modelSel,#runSel,#pcpSel{background:#2c3e50;color:#fff;border:0;border-radius:4px;padding:3px 4px;font-size:12px}
-#runSel{flex:1}
+#modelSel,#runSel,#ensViewSel,#pcpSel{background:#2c3e50;color:#fff;border:0;border-radius:4px;padding:3px 4px;font-size:12px}
+#runSel,#ensViewSel{flex:1}
 #pcpSel{max-width:150px}
 .pcpwrap{display:inline-block}
 #runNote{color:#8fd3ff;font-size:11px;min-height:0}
@@ -159,7 +159,12 @@ html,body{margin:0;height:100%;background:#111;font-family:system-ui,-apple-syst
   body.lines-open #legend{display:none}
 }
 
-/* ENS has no wind / precip: hide those toggles and grey the unused colour options */
-body.ens-model .windOnly{display:none}
+/* Ensemble min/mean/max has no wind: hide those toggles. Individual members show them again. */
+body.ens-model:not(.ens-member) .windOnly{display:none}
 #shadeSel option:disabled{color:#889}
-body.ens-model #barbBlock{display:none}
+body.ens-model:not(.ens-member) #barbBlock{display:none}
+.memberNav{display:flex;align-items:center;gap:6px;flex:1}
+.memberNav button{background:#2c3e50;color:#fff;border:0;border-radius:4px;width:28px;height:26px;cursor:pointer;font-size:16px;line-height:1}
+.memberNav button:hover{background:#3d566e}
+#ensMember{width:52px;text-align:center}
+#ensMemberOf{color:#c8ced6;font-size:12px;white-space:nowrap}

@@ -17,6 +17,22 @@
     <button id="settingsBtn" aria-expanded="false" aria-controls="settings" title="Settings">⚙ Settings ▾</button></div>
   <div class="row"><label for="modelSel">Model</label><select id="modelSel" title="Forecast model"></select></div>
   <div class="row"><label for="runSel">Run</label><select id="runSel" title="Model run"></select></div>
+  <div class="row" id="ensViewRow" hidden>
+    <label for="ensViewSel">View</label>
+    <select id="ensViewSel" title="Ensemble view">
+      <option value="stats">Ensemble min / mean / max</option>
+      <option value="member">Individual member</option>
+    </select>
+  </div>
+  <div class="row" id="ensMemberRow" hidden>
+    <label for="ensMember">Member</label>
+    <div class="memberNav">
+      <button type="button" id="ensMemberPrev" title="Previous member">‹</button>
+      <input id="ensMember" type="number" min="1" max="50" value="1" title="Ensemble member">
+      <span id="ensMemberOf">of 50</span>
+      <button type="button" id="ensMemberNext" title="Next member">›</button>
+    </div>
+  </div>
   <div id="runinfo">Loading…</div>
   <div id="runNote"></div>
   <div id="validtime"></div>
@@ -33,6 +49,7 @@
   <div class="row"><label for="shadeSel">Colours</label>
     <select id="shadeSel"><option value="speed">Wind speed</option><option value="gust">Wind gust</option>
       <option value="temp">Temperature (2 m)</option><option value="precip">Precipitation</option><option value="refl">Radar (reflectivity)</option>
+      <option value="msl">Sea-level pressure</option>
       <option value="mslmin">Ensemble min MSLP</option><option value="mslmean">Ensemble mean MSLP</option><option value="mslmax">Ensemble max MSLP</option>
       <option value="off">Off</option></select>
     <span class="pcpwrap"><select id="pcpSel" title="Precipitation period">

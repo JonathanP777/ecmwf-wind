@@ -41,6 +41,8 @@ Per run and forecast step we write (8-bit, scaled with per-step min/max in meta.
   ens_XXX.png   RGB: ensemble min / mean / max MSLP (ENS only; fixed 870-1080 hPa scale)
   isobars_XXX.json  MSLP contour lines every 4 hPa + H/L centres
                     (ENS: {"min","mean","max"} each with lines + H/L)
+  For the newest ENS run only, individual members live under ens/members/<run id>/0p50/mXX/:
+  wind_XXX.png  RGBA: 10 m u, v, gust, MSLP (0.5°, 6-hourly, 50 perturbed members).
 """
 import json, os, sys, shutil, time, datetime as dt, urllib.request, urllib.error, glob
 from concurrent.futures import ThreadPoolExecutor
@@ -59,6 +61,9 @@ BASE = "https://data.ecmwf.int/forecasts"
 LONG_STEPS = list(range(0, 145, 3)) + list(range(150, 361, 6))
 SHORT_STEPS = list(range(0, 145, 3))
 AIFS_STEPS = list(range(0, 361, 6))
+# Individual members of the latest ENS run only (keeps storage down): 0.5° and 6-hourly.
+MEM_STEPS_LONG = list(range(0, 361, 6))    # 00/12 UTC, 61 steps to +360 h
+MEM_STEPS_SHORT = list(range(0, 145, 6))   # 06/18 UTC, 25 steps to +144 h
 GUST_PARAMS = ("10fg", "10fg3", "10fg6")
 HRRR_URL = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.{d:%Y%m%d}/conus/hrrr.t{d:%H}z.wrfsfcf{s:02d}.grib2"
 RRFS_URL = "https://noaa-rrfs-ops-pds.s3.amazonaws.com/rrfs.{d:%Y%m%d}/{d:%H}/rrfs.t{d:%H}z.2dfld.3km.f{s:03d}.conus.grib2"
@@ -198,7 +203,9 @@ def qsqrt(a):
 
 def isobars(msl_hpa):
     """contours every 4 hPa + H/L on a smoothed 0.5deg grid; lon wrapped"""
-    z = ndimage.gaussian_filter(msl_hpa[::2, ::2], sigma=1.5, mode=("nearest", "wrap"))
+    # 0.25° input is downsampled to 0.5°; a field that is already 0.5° is left as is
+    sl = np.s_[::2, ::2] if msl_hpa.shape[0] >= 700 else np.s_[:, :]
+    z = ndimage.gaussian_filter(msl_hpa[sl], sigma=1.5, mode=("nearest", "wrap"))
     lats = 90 - 0.5 * np.arange(z.shape[0]); lons = -180 + 0.5 * np.arange(z.shape[1] + 1)
     zw = np.concatenate([z, z[:, :1]], axis=1)
     gen = contourpy.contour_generator(lons, lats, zw, line_type=contourpy.LineType.Separate)
@@ -457,12 +464,13 @@ def current_index():
     except Exception as e:
         print("warning: could not read current index.json:", e); return None
 
-def model_entry(model, runs):
+def model_entry(model, runs, members=None):
     cfg = MODELS[model]
     e = {"key": model, "name": cfg["name"], "path": f"{cfg['site']}/", "gust": cfg["gust"], "refl": cfg["refl"],
          "pcp": cfg["pcp"], "wind": cfg.get("wind", True), "ens": bool(cfg.get("ens")),
          "global": cfg["kind"] != "noaa", "runs": runs}
     if region(model): e["region"] = region(model)
+    if members: e["members"] = members
     return e
 
 def run_model(model):
@@ -515,9 +523,156 @@ def run_model(model):
         entries.append(e)
         # free disk: the staged copy in data/ is what gets uploaded; the build cache is not needed again
         if new and not os.environ.get("KEEP_CACHE"): shutil.rmtree(cache_dir(run, model), ignore_errors=True)
-    entry = model_entry(model, entries)
+    members = update_members(t0, budget, old) if model == "ens" else None
+    entry = model_entry(model, entries, members)
     json.dump(entry, open(os.path.join(FRAG, model + ".json"), "w"), indent=1)
     print(f"{model}: {len(entries)} of {len(runs)} runs available, took {time.time() - t0:.0f} s")
+    return entry
+
+
+# ---------------------------------------------------------------- individual ENS members (latest run only)
+def mem_steps_for(run):
+    return MEM_STEPS_LONG if run.hour in (0, 12) else MEM_STEPS_SHORT
+
+def mem_dest(run):
+    return os.path.join(DATA, "ens", "members", run_id(run), "0p50")
+
+def ens_param_entries(run, step, params):
+    """param -> {member number 1-50: index entry} for surface fields in the enfo file."""
+    raw = http(url(run, step, "index", "ens"))
+    if raw is None: raise RuntimeError(f"missing ENS index {run} +{step}h")
+    out = {p: {} for p in params}
+    for line in raw.decode().splitlines():
+        e = json.loads(line)
+        if e.get("levtype") != "sfc": continue
+        p, n = e.get("param"), e.get("number")
+        if p in out and n is not None:
+            out[p][int(n)] = e
+    return out
+
+def process_members_step(run, step, dest):
+    """Download 10u/10v/gust/msl for all 50 members at one step; write 0.5° RGBA + isobars."""
+    wanted = ("10u", "10v", "msl") + GUST_PARAMS
+    entries = ens_param_entries(run, step, wanted)
+    members = sorted(entries["10u"].keys())
+    if len(members) < 40:
+        raise RuntimeError(f"ENS members {run_id(run)} +{step}h: expected 50 10u members, got {len(members)}")
+    if set(entries["10v"]) != set(members) or set(entries["msl"]) != set(members):
+        raise RuntimeError(f"ENS members {run_id(run)} +{step}h: 10u/10v/msl member sets differ")
+    gust_p = next((p for p in GUST_PARAMS if entries.get(p)), None) if step > 0 else None
+    jobs = [("10u", n) for n in members] + [("10v", n) for n in members] + [("msl", n) for n in members]
+    if gust_p:
+        jobs += [(gust_p, n) for n in members if n in entries[gust_p]]
+
+    def fetch(item):
+        p, n = item
+        e = entries[p][n]
+        raw = http(url(run, step, "grib2", "ens"), (e["_offset"], e["_offset"] + e["_length"] - 1))
+        arr, sr, _ = read_grib(raw)
+        return p, n, arr[::2, ::2], sr
+
+    got = {}  # (param, member) -> (half-res array, stepRange)
+    with ThreadPoolExecutor(16) as ex:
+        for p, n, a, sr in ex.map(fetch, jobs):
+            got[(p, n)] = (a, sr)
+    st = {"hour": step, "valid": f"{run + dt.timedelta(hours=step):%Y-%m-%dT%H:%MZ}", "gustPeriod": None, "m": []}
+    name = f"{step:03d}"
+    for n in members:
+        u, v, msl = got[("10u", n)][0], got[("10v", n)][0], got[("msl", n)][0]
+        uq, u_lo, u_hi = q8(u); vq, v_lo, v_hi = q8(v)
+        if gust_p and (gust_p, n) in got:
+            gu, sr = got[(gust_p, n)]
+            gq, g_lo, g_hi = q8(np.maximum(gu, 0))
+            a0, a1 = (int(x) for x in sr.split("-"))
+            if st["gustPeriod"] is None: st["gustPeriod"] = a1 - a0
+        else:
+            gq = np.zeros_like(uq); g_lo, g_hi = 0.0, 1.0
+        rgba = np.dstack([uq, vq, gq, pack_msl(msl)])
+        d = os.path.join(dest, f"m{n:02d}")
+        os.makedirs(d, exist_ok=True)
+        save_png(rgba, os.path.join(d, f"wind_{name}.png"))
+        json.dump(isobars(msl / 100.0), open(os.path.join(d, f"isobars_{name}.json"), "w"), separators=(",", ":"))
+        st["m"].append([round(u_lo, 2), round(u_hi, 2), round(v_lo, 2), round(v_hi, 2),
+                        round(g_lo, 2), round(g_hi, 2)])
+    if st["gustPeriod"] is None and step == 0: st["gustPeriod"] = None
+    return st, members
+
+def members_entry(run, steps, gen):
+    cfg = grid_meta("ens", "half")
+    return {"id": run_id(run), "run": f"{run:%Y-%m-%dT%H:%MZ}", "path": "ens/members/",
+            "dir": f"{run_id(run)}/0p50", "res": cfg["res"], "resLabel": cfg["resLabel"],
+            "width": cfg["width"], "height": cfg["height"], "lon0": cfg["lon0"], "lat0": cfg["lat0"],
+            "dlon": cfg["dlon"], "dlat": cfg["dlat"], "nMembers": 50, "nSteps": len(steps),
+            "maxHour": steps[-1]["hour"] if steps else 0, "generated": gen}
+
+def write_members_meta(run, steps, dest, gen):
+    cfg = grid_meta("ens", "half")
+    meta = {"model": "ECMWF Ensemble (ENS) individual members", "modelKey": "ens", "kind": "members",
+            "id": run_id(run), "run": f"{run:%Y-%m-%dT%H:%MZ}", **cfg, "nMembers": 50,
+            "pLo": P_LO, "pHi": P_HI, "steps": steps, "generated": gen}
+    json.dump(meta, open(os.path.join(dest, "meta.json"), "w"), separators=(",", ":"))
+
+def remote_member_json(run, name):
+    """progress.json or meta.json of a member run: local file, else the public bucket."""
+    local = os.path.join(mem_dest(run), name)
+    if os.path.exists(local):
+        return json.load(open(local))
+    u = os.environ.get("DATA_URL")
+    if not u: return None
+    try:
+        raw = http(u.rstrip("/") + f"/ens/members/{run_id(run)}/0p50/{name}?t=%d" % time.time())
+        return json.loads(raw) if raw else None
+    except Exception as e:
+        print(f"note: could not read {name} for members of {run_id(run)}: {e}")
+        return None
+
+def update_members(t0, budget, old):
+    """Fill individual members of the newest ENS run, staying inside the job time budget.
+
+    The site keeps using the previous complete member run until every step of the new one
+    is on the bucket (meta.json is written last). A later hourly job continues any leftover steps.
+    Progress is read from the bucket because each job starts with an empty checkout.
+    """
+    prev = (old or {}).get("members")
+    runs = plan("ens")
+    if not runs:
+        print("members: no complete ENS run to build"); return prev
+    run = runs[0]
+    rid, steps = run_id(run), mem_steps_for(run)
+    dest = mem_dest(run)
+    os.makedirs(dest, exist_ok=True)
+    remote_meta = remote_member_json(run, "meta.json")
+    if remote_meta and len(remote_meta.get("steps") or []) >= len(steps):
+        print(f"members of {rid}: already complete in the bucket")
+        return members_entry(run, remote_meta["steps"], remote_meta.get("generated") or "")
+    prog = remote_member_json(run, "progress.json") or {"stepsDone": [], "sts": []}
+    done = set(prog.get("stepsDone") or [])
+    sts = [s for s in prog.get("sts") or [] if s["hour"] in done]
+    print(f"members of {rid}: {len(done)}/{len(steps)} steps already built", flush=True)
+    for step in steps:
+        if step in done: continue
+        if time.time() - t0 > budget:
+            json.dump({"stepsDone": sorted(done), "sts": sts}, open(prog_p, "w"))
+            print(f"members of {rid}: time budget used up at +{step}h ({len(done)}/{len(steps)} steps done)")
+            return prev
+        t1 = time.time()
+        try:
+            st, members = process_members_step(run, step, dest)
+        except Exception as e:
+            json.dump({"stepsDone": sorted(done), "sts": sts}, open(prog_p, "w"))
+            print(f"warning: members of {rid} +{step}h failed: {e}", flush=True)
+            return prev
+        sts.append(st); done.add(step)
+        json.dump({"stepsDone": sorted(done), "sts": sts}, open(prog_p, "w"))
+        print(f"members of {rid}: +{step}h ({len(members)} members) in {time.time() - t1:.0f} s "
+              f"({len(done)}/{len(steps)})", flush=True)
+    if len(done) < len(steps):
+        return prev
+    sts.sort(key=lambda s: s["hour"])
+    gen = f"{dt.datetime.now(dt.timezone.utc):%Y-%m-%dT%H:%MZ}"
+    write_members_meta(run, sts, dest, gen)
+    entry = members_entry(run, sts, gen)
+    print(f"members of {rid}: complete, {len(sts)} steps, 50 members, 0.5° 6-hourly")
     return entry
 
 def publish():

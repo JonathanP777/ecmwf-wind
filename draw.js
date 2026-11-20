@@ -478,7 +478,7 @@ async function renderPNG(withTiles) {
   // caption: model run, valid time, layer
   const shadeTxt = settings.shade === 'off' ? 'Wind (particles/barbs)' : $('legendTitle').textContent;
   const l1 = window._app.modelName + ' · ' + $('validtime').textContent + ' (' + $('stepLabel').textContent + ')';
-  const l2 = $('runinfo').textContent.replace(/ · .*$/, '').replace('(latest)', '').trim() + ' · ' + shadeTxt + (settings.isobars ? ' · MSLP isobars (hPa)' : '');
+  const l2 = $('runinfo').textContent.replace(/ · .*$/, '').replace('(latest)', '').trim() + ' · ' + shadeTxt + ((window._app && window._app.isoOn) ? ' · MSLP isobars (hPa)' : '');
   ctx.font = '600 14px system-ui, sans-serif'; const w1 = ctx.measureText(l1).width;
   ctx.font = '12px system-ui, sans-serif'; const w2 = ctx.measureText(l2).width;
   const cw = Math.min(W - 20, Math.max(w1, w2) + 20);
