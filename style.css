@@ -6,6 +6,7 @@ html,body{margin:0;height:100%;background:#111;font-family:system-ui,-apple-syst
 #runinfo{color:#aaa;font-size:12px}
 #validtime{font-size:16px;font-weight:600;margin:6px 0;color:#ffd166}
 .row{display:flex;align-items:center;gap:8px;margin-top:4px}
+.row[hidden]{display:none!important}
 #slider{flex:1}
 #play{background:#2c3e50;color:#fff;border:0;border-radius:4px;width:32px;height:26px;cursor:pointer}
 #stepLabel{min-width:42px;text-align:right;font-variant-numeric:tabular-nums}
