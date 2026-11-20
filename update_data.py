@@ -407,7 +407,6 @@ def build_run(run, model="ifs"):
             else:
                 tpall = dict(ex.map(lambda st: fetch_tp(run, st, model), steps))   # accumulated precip, mm
                 sts = list(ex.map(lambda i: process_step(run, steps, i, out, tpall, model), range(len(steps))))
-    del tpall
     json.dump({"run": f"{run:%Y-%m-%dT%H:%MZ}", "id": rid, "steps": sts}, open(os.path.join(out, "steps.json"), "w"))
     open(os.path.join(out, "DONE"), "w").write(str(FORMAT))
     print(f"{model} run {rid}: built {len(steps)} steps in {time.time() - t0:.0f} s", flush=True)
